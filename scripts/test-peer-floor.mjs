@@ -4,16 +4,22 @@
  *
  *   Every `@deepseek-ai/dsh*` peer must declare a FLOOR ONLY (`>=x.y.z[-pre]`),
  *   so the plugin stays installable on the declared floor and every later
- *   harness — today 0.1.7-0, 0.2.0-rc.1, 0.2.0-rc.2, and any future 0.3.x / 1.x.
+ *   harness — today 0.1.7-0, 0.2.0-rc.1, 0.2.0-rc.2, 0.2.1-rc.1, and any
+ *   future 0.3.x / 1.x.
  *
- * Two rules are enforced here, both from AGENTS.md §1:
+ * Three rules are enforced here, both from AGENTS.md §1:
  *
  *  1. No ceiling, ever. `^0.1.7-0` means `>=0.1.7-0 <0.2.0`, and the harness
  *     rejects the whole bundle with `incompatible-version` the moment it moves
  *     past that upper bound (observed: dsh 0.2.0-rc.2 refused
  *     dsh-session-bridge@0.4.0 at install time and rolled the install back).
  *     The range looks harmless in review, so the rule needs a machine.
- *  2. When a breaking upstream change forces raising the floor, ALL declarations
+ *  2. `package.json` `engines.dsh` is the AUTHORITATIVE declaration on dsh
+ *     0.2.1-rc.1 and later: when it is present the gate evaluates it ALONE and
+ *     ignores every peer. It must therefore exist, be floor-only, and state
+ *     exactly the peer floor — a narrower `engines.dsh` silently overrides
+ *     correct peers, and a wider one silently widens the claim.
+ *  3. When a breaking upstream change forces raising the floor, ALL declarations
  *     move together: the 8 peers, `engines.dsh`, and the build-time dev ranges.
  *     Raising only some of them leaves the package claiming compatibility it no
  *     longer has.
@@ -32,16 +38,27 @@ const readJson = (file) => JSON.parse(readFileSync(join(ROOT, file), 'utf8'))
 /** The one accepted shape: a plain lower bound, prerelease allowed. */
 const FLOOR_ONLY = /^>=\s*\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 
-// Self-test the predicate first: a guard that accepts everything guards nothing.
+/** The `engines.dsh` rule, as a predicate, so the guard can self-test it. */
+const enginesIsFloor = (manifestLike) => (
+  typeof manifestLike.engines?.dsh === 'string' && FLOOR_ONLY.test(manifestLike.engines.dsh)
+)
+
+// Self-test the predicates first: a guard that accepts everything guards nothing.
 for (const ok of ['>=0.1.7-0', '>=0.2.0-rc.1', '>=1.0.0']) {
   assert.ok(FLOOR_ONLY.test(ok), `predicate must accept the floor-only range ${ok}`)
 }
 for (const bad of ['^0.1.7-0', '~0.1.7-0', '0.1.7-0', '>=0.1.7-0 <0.3.0', '0.1.7-0 || 0.2.0-rc.2', 'workspace:*', '*', '>=0.1.7-0 <=0.2.0']) {
   assert.ok(!FLOOR_ONLY.test(bad), `predicate must reject the bounded/pinned range ${bad}`)
 }
+// A missing `engines.dsh` must fail too — since dsh 0.2.1-rc.1 it decides alone, so
+// its absence silently hands the decision back to the peers (the old behaviour),
+// which is exactly the drift this guard exists to prevent.
+assert.ok(enginesIsFloor({ engines: { dsh: '>=0.1.7-0' } }), 'enginesIsFloor must accept a floor')
+assert.ok(!enginesIsFloor({ engines: { node: '>=20' } }), 'enginesIsFloor must reject a missing engines.dsh')
+assert.ok(!enginesIsFloor({}), 'enginesIsFloor must reject a manifest without engines')
+assert.ok(!enginesIsFloor({ engines: { dsh: '^0.1.7-0' } }), 'enginesIsFloor must reject a bounded engines.dsh')
 
 const manifest = readJson('package.json')
-const pluginManifest = readJson('dsh.plugin.json')
 
 const dshPeers = Object.entries(manifest.peerDependencies ?? {})
   .filter(([name]) => name === '@deepseek-ai/dsh' || name.startsWith('@deepseek-ai/dsh-'))
@@ -56,13 +73,28 @@ assert.deepEqual(
   + bounded.map(([name, range]) => `  "${name}": ${JSON.stringify(range)}`).join('\n'),
 )
 
-// `engines.dsh` is not enforced by the harness, but it is the documented
-// compatibility statement, so it must state exactly the same floor as the
-// peers. Raising one and forgetting the other is the drift this catches.
-const engines = pluginManifest.engines?.dsh
+// The AUTHORITATIVE declaration since dsh 0.2.1-rc.1: `evaluatePluginCompatibility`
+// reads `engines.dsh` first and, when it is present, ignores `peerDependencies`
+// entirely (release note: "第三方插件的版本兼容性优先按 engines.dsh 判断；
+// 未声明时沿用原有规则"). It therefore has to exist and state exactly the peer
+// floor: a narrower range here overrides correct peers and denies the bundle on a
+// harness the peers would have accepted.
+const engines = manifest.engines?.dsh
 assert.ok(
-  typeof engines === 'string' && FLOOR_ONLY.test(engines),
-  `dsh.plugin.json engines.dsh must be a floor-only range, got ${JSON.stringify(engines)}`,
+  enginesIsFloor(manifest),
+  `package.json engines.dsh must be a floor-only range (it decides alone on dsh >= 0.2.1-rc.1), `
+  + `got ${JSON.stringify(engines)}`,
+)
+
+// `dsh.plugin.json` is legacy 0.1.x metadata: no 0.2.x harness reads it (verified
+// by grepping both the published CLI and the desktop app for the filename), and
+// `dsh.bundle.patch` in package.json is what actually mounts the plugin. It is
+// still shipped for old harnesses, so it must never drift from the live floor.
+const pluginManifest = readJson('dsh.plugin.json')
+const legacyEngines = pluginManifest.engines?.dsh
+assert.ok(
+  typeof legacyEngines === 'string' && FLOOR_ONLY.test(legacyEngines),
+  `dsh.plugin.json engines.dsh must be a floor-only range, got ${JSON.stringify(legacyEngines)}`,
 )
 
 // The two manifests are versioned together (publish.yml syncs them to the tag);
@@ -81,8 +113,13 @@ const peerFloor = dshPeers[0][1]
 
 assert.equal(
   engines, peerFloor,
-  'dsh.plugin.json engines.dsh must equal the peer floor (AGENTS.md §1: raise every '
+  'package.json engines.dsh must equal the peer floor (AGENTS.md §1: raise every '
   + `declaration together) — engines.dsh is ${JSON.stringify(engines)}, peers say ${JSON.stringify(peerFloor)}`,
+)
+assert.equal(
+  legacyEngines, peerFloor,
+  'dsh.plugin.json engines.dsh must equal the peer floor (legacy metadata must not drift) — '
+  + `it says ${JSON.stringify(legacyEngines)}, peers say ${JSON.stringify(peerFloor)}`,
 )
 
 /** Numeric prerelease-aware comparison, enough for DSH version shapes. */
@@ -139,7 +176,7 @@ for (const [name, range] of dshDev) {
 }
 
 console.log(
-  `peer-floor: OK — ${String(dshPeers.length)} DSH peers and engines.dsh declare the same floor `
-  + `(${String(peerFloor)}), every later harness is accepted by design; `
-  + `${String(dshDev.length)} dev ranges are floors at or above it`,
+  `peer-floor: OK — ${String(dshPeers.length)} DSH peers, package.json engines.dsh and the legacy `
+  + `dsh.plugin.json engines.dsh all declare the same floor (${String(peerFloor)}), every later harness `
+  + `is accepted by design; ${String(dshDev.length)} dev ranges are floors at or above it`,
 )

@@ -6,10 +6,11 @@
 
 ## 1. 硬性规则：DSH 依赖只允许声明「下限」，必须向后兼容
 
-本插件必须能装在 **`0.1.7-0` 及之后的任意 DSH 上**（含 `0.2.0-rc.1`、`0.2.0-rc.2` 以及未来的
-`0.3.x` / `1.x`）。为此：
+本插件必须能装在 **`0.1.7-0` 及之后的任意 DSH 上**（含 `0.2.0-rc.1`、`0.2.0-rc.2`、`0.2.1-rc.1`
+以及未来的 `0.3.x` / `1.x`）。为此：
 
-> **所有 `@deepseek-ai/dsh*` 的 `peerDependencies` 只能是 `>=x.y.z` / `>=x.y.z-pre` 形式的下限范围。**
+> **所有 `@deepseek-ai/dsh*` 的 `peerDependencies` 只能是 `>=x.y.z` / `>=x.y.z-pre` 形式的下限范围；
+> 同时 `package.json` 的 `engines.dsh` 必须声明同一条下限（它在 `0.2.1-rc.1` 起单独裁决）。**
 
 - ✅ `">=0.1.7-0"`、`">=0.2.0-rc.1"`
 - ❌ `"^0.1.7-0"`（= `>=0.1.7-0 <0.2.0`，**会锁死 minor**）、`"~0.1.7-0"`、`"0.1.7-0"`（精确）、
@@ -21,14 +22,31 @@
 
 harness 在安装与启动时都会跑闸门
 `evaluatePluginCompatibility(manifest, exemptions, runtimeVersion)`
-（`@deepseek-ai/dsh-app-boot`，即 `lib/types/plugin-compatibility.js`）：
+（`@deepseek-ai/dsh-app-boot`，即 `lib/types/plugin-compatibility.js`）。**它读的是插件自己的
+`package.json`**（`dsh.plugin.json` 在整个 0.2.x 里没有任何读取方，见下方「配套要求」）。
+
+闸门的判据在 `0.2.1-rc.1` 变了（官方发布说明「其他变更」原文：*第三方插件的版本兼容性优先按
+`engines.dsh` 判断；未声明时沿用原有规则。插件作者需检查声明是否覆盖支持的 DSH 版本*）：
 
 ```js
-// 只检查 @deepseek-ai/dsh 与 @deepseek-ai/dsh-* 前缀的 peer
-if (name !== '@deepseek-ai/dsh' && !name.startsWith('@deepseek-ai/dsh-')) continue
-// runtimeVersion（运行中的 harness 版本）参与比较；一旦任一 peer 不满足，整包被拒
-if (!semver.satisfies(runtimeVersion, requirement, { includePrerelease: true })) peers[name] = range
+// ① 声明了 engines.dsh 就只由它裁决，peerDependencies 全部忽略
+if (Object.hasOwn(engines, 'dsh')) return satisfies(runtime, engines.dsh) ? {} : { 'engines.dsh': engines.dsh }
+// ② 没有 engines.dsh 才逐个比对 @deepseek-ai/dsh 与 @deepseek-ai/dsh-* 前缀的 peer
+for (const [name, range] of Object.entries(peerDependencies)) {
+  if (name !== '@deepseek-ai/dsh' && !name.startsWith('@deepseek-ai/dsh-')) continue
+  if (!satisfies(runtime, workspacePeer ? runtime : range)) unmet[name] = range
+}
+// satisfies = semver.satisfies(runtime, range, { includePrerelease: true })；空范围/非法范围一律不满足
 ```
+
+三条要点：
+
+1. **`engines.dsh` 一旦存在就是唯一判据**——peer 写得多正确都不参与。所以它必须存在、是纯下限、
+   且与 peer 下限逐字一致；写窄了会在 peer 本来能放行的 harness 上被拒，写宽了等于偷偷放宽承诺。
+2. **`engines.dsh` 缺失时回落 peer**（旧行为）——这是 `0.1.7-0 … 0.2.0-rc.2` 上唯一生效的路径，
+   所以 peer 下限仍然要正确，不能因为"现在由 engines 裁决"就放任 peer 漂移。
+3. **`workspace:^` / `workspace:~` / `workspace:*` 只在 peer 里指"当前运行时"**（视为满足）；
+   写进 `engines.dsh` 是无效范围 → 直接判不兼容。
 
 后果（实测日志，桌面版 harness `0.2.0-rc.2`）：
 
@@ -41,9 +59,23 @@ peerDependencies {"@deepseek-ai/dsh-session":"^0.1.7-0", ...}.
 **回滚**（`package.json` / `pnpm-lock.yaml` / `node_modules` 全部还原），已装好的 bundle 在启动时被
 **静默跳过**，`session_bridge_*` 全部消失。**0.5.0 起已改为下限，别再改回去。**
 
-实测（桌面版 harness 自身的 `evaluatePluginCompatibility`，`0.5.1` 的 manifest）：
-`0.2.0-rc.1` ✅ `0.2.0-rc.2` ✅ `0.2.0` ✅ `0.3.0-rc.1` ✅ `0.3.0` ✅ `1.0.0` ✅；同一 manifest 换成
-`^0.1.7-0` → `0.2.0-rc.2` ❌。
+实测矩阵（本仓库 0.7.0 的 manifest，用两版 harness 各自的 `evaluatePluginCompatibility` 求值）：
+
+| manifest 形态 | `0.2.0-rc.2`（旧闸门） | `0.2.1-rc.1`（新闸门） |
+|---|---|---|
+| 现状：peer 全下限 + `engines.dsh` 下限 | ✅ | ✅ |
+| 删掉 `engines.dsh`（回落 peer） | ✅ | ✅ |
+| peer 全下限 + `engines.dsh: "^0.1.7-0"` | ✅（`engines` 被忽略） | ❌ `{"engines.dsh":"^0.1.7-0"}` |
+| peer 带上界 + `engines.dsh` 下限 | ✅ | ✅（**peer 被忽略**） |
+| peer 里出现空范围 `""` | ❌ | ✅（**peer 被忽略**） |
+| peer 全写 `workspace:*` | ✅ | ✅ |
+
+注意第 4、5 行：新闸门下 `engines.dsh` 一旦存在，**peer 的错误完全不参与判定**——peer 漂移在
+`0.2.1-rc.1` 上"看不见"，却会在 `0.2.0-rc.2` 这类旧 harness 上直接拒装。这正是守卫仍然强制校验
+peer 的原因。
+
+`0.1.7-0` ✅ `0.2.0-rc.1` ✅ `0.2.0-rc.2` ✅ `0.2.1-rc.1` ✅ `0.2.0` ✅ `0.3.0-rc.1` ✅ `1.0.0` ✅——
+下限不设上界，后续版本默认兼容；同一 manifest 换成 `^0.1.7-0` → `0.2.0-rc.2` ❌。
 
 ### 破坏性变更时：改代码就必须同步抬高下限
 
@@ -63,7 +95,9 @@ peerDependencies {"@deepseek-ai/dsh-session":"^0.1.7-0", ...}.
 
 1. `package.json` 里 **8 个** `@deepseek-ai/dsh*` peer 全部改成同一条新下限范围
    （守卫会校验"所有 peer 用同一个下限"）；
-2. `dsh.plugin.json` 的 `engines.dsh` 改成**同一条**范围（守卫会校验它与 peer 下限一致）；
+2. `package.json` 的 `engines.dsh` 改成**同一条**范围（**权威声明**：`0.2.1-rc.1` 起它单独裁决，
+   守卫会校验它与 peer 下限逐字一致）；`dsh.plugin.json` 的 `engines.dsh` 同步改成同一条
+   （0.1.x 的遗留元数据，守卫也校验，别让它漂移）；
 3. `devDependencies` 里 12 个 DSH 包的范围改成 `>=新下限`，然后 `pnpm install` 让锁文件解析到下限之后；
 4. 走完整验证：`pnpm typecheck` / `pnpm check:compat` / `pnpm test` / `pnpm build` / `pnpm smoke`；
 5. 桌面版 harness 单独验闸门（见 §2 末），确认新下限**不高于**运行版本；
@@ -83,22 +117,30 @@ peerDependencies {"@deepseek-ai/dsh-session":"^0.1.7-0", ...}.
 
 ### 配套要求
 
-- `dsh.plugin.json` 的 `engines.dsh` 必须与 peer 下限**逐字一致**（当前都是 `>=0.1.7-0`）。
-  注意：**`engines.dsh` 目前不被安装器/加载器强制校验**（见 `dsh-package-manifest` README），
-  真正卡人的是 `peerDependencies`——不要把闸门问题误判成 `engines` 问题。
-- **`scripts/test-peer-floor.mjs` 强制这条规则**，已接入 `pnpm test`；CI 与发布工作流都会跑
-  `pnpm test`，所以带 `^` / 上界的改动、或改了 peer 忘了改 `engines.dsh`，都会直接让流水线红掉。
+- **权威声明是 `package.json` 的 `engines.dsh`**：`0.2.1-rc.1` 起闸门先看它，存在就**单独裁决**，
+  所以它必须存在、是纯下限、且与 peer 下限**逐字一致**（当前都是 `>=0.1.7-0`）。
+- **`dsh.plugin.json` 是 0.1.x 的遗留元数据**：0.2.x 全系（实测两个安装树：CLI `0.2.1-rc.1` 与桌面版
+  `0.2.0-rc.2`）**没有任何读取方**——grep 文件名零命中；真正把插件挂上的是 `package.json` 的
+  `dsh.bundle.patch`。它仍随包发布给旧 harness，所以里面的 `engines.dsh` 也要与下限一致（守卫校验），
+  但别以为改它就能影响闸门。（上游 `dsh-package-manifest` README 里"`engines.dsh` 不被强制校验"
+  那句已经过时，它描述的是加入本判据之前的版本。）
+- **`scripts/test-peer-floor.mjs` 强制这些规则**，已接入 `pnpm test`；CI 与发布工作流都会跑
+  `pnpm test`。六类回归都实测会让它红掉：peer 带上界、`engines.dsh` 缺失、`engines.dsh` 写窄、
+  `dsh.plugin.json` 漂移、dev 范围钉死、dev 范围低于下限。
 - 真的绕不开时，用户侧只能逐版本豁免（不推荐、不写进插件）：
   `dsh plugin allow-version <包@版本> --dsh-version <runtime> --accept-risk`。
+  豁免存在 profile 自己的 `compatibility.json` 里，键是**精确** `包名@版本` → 精确运行时版本列表，
+  插件升级和 DSH 升级都**不继承**授权。
 
 ---
 
 ## 2. DSH 每次发新版后要做的事
 
-上游发版节奏很快（`0.2.0-rc.1` → `0.2.0-rc.2` 这类 rc 也常带真改动），**升级-验证-重建**是固定动作：
+上游发版节奏很快（`0.2.0-rc.1` → `0.2.0-rc.2` → `0.2.1-rc.1` 这类 rc 也常带真改动），
+**升级-验证-重建**是固定动作：
 
 ```bash
-# 1. 拉最新 DSH 发布包（devDependencies 是 >= 下限，pnpm update 即可）
+# 1. 拉最新 DSH 发布包。devDependencies 写的是 >= 下限，但注意下面两个坑。
 pnpm update '@deepseek-ai/dsh-agent' '@deepseek-ai/dsh-agent-preset-registry' \
   '@deepseek-ai/dsh-brand' '@deepseek-ai/dsh-home-paths' '@deepseek-ai/dsh-llm' \
   '@deepseek-ai/dsh-scope' '@deepseek-ai/dsh-session' '@deepseek-ai/dsh-session-persistence' \
@@ -113,28 +155,44 @@ pnpm build          # 产物 lib/index.js 内联新 DSH
 pnpm smoke          # 产物真的能挂载并注册 15 个工具
 ```
 
+**坑 1：新 tuple 的 rc 不会被 `>=` 下限解析到。** semver 规定预发布版本只在「comparator 的
+`major.minor.patch` 完全相同」时参与匹配，所以 `>=0.2.0-rc.1` 能拿到 `0.2.0-rc.2`，却**拿不到**
+`0.2.1-rc.1`（实测 `pnpm update` 报 `Already up to date`，`pnpm list` 仍是 `0.2.0-rc.2`）。
+每遇到一个新 tuple，就要把那 12 个 dev 范围抬到 `>=<新 tuple>-rc.x` 再 `pnpm install`——
+**这只动 devDependencies（构建目标），不动 peer / `engines.dsh`（运行时承诺）**，两者本来就允许不同
+（守卫只要求 dev ≥ peer 下限）。
+
+**坑 2：`pnpm update` 会把 dev 的 `>=` 下限改写成精确钉版。** 实测它把 12 个
+`">=0.2.0-rc.1"` 直接写成 `"0.2.0-rc.2"`，`pnpm test` 的守卫随即报
+`must be a floor-only range`。所以每次 `pnpm update` 之后**必须 `git diff package.json` 复核**，
+把 dev 范围改回 `>=` 形式（本仓库 0.7.0 已踩过一次）。
+
 然后更新 `README.zh.md` / `README.md` 的「实测于 x.y.z」与 `CHANGELOG.md`，必要时发新版本。
 
-### 验证运行中的 harness（桌面版）
+### 验证运行中的 harness（两处安装，都要验）
 
-桌面版的 DSH 包在 `app.asar` 里，`check:compat` 的目录锚点扫不到它，因此桌面版要单独验证：
-
-```powershell
-# 桌面版 CLI 的版本（应为运行中的版本）
-$env:ELECTRON_RUN_AS_NODE=1
-& "E:\soft\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" --version
-```
-
-用桌面版**自己的**闸门评估本仓库的 manifest（`<app>` = DeepSeek Harness 安装目录）：
+**① 会话里正在跑的 harness**（全局 npm / scoop 安装，本例 `0.2.1-rc.1`）——`pnpm check:compat`
+的目录锚点扫的就是它（`<dsh 安装目录>\node_modules\@deepseek-ai`），所以这一侧已被 `check:compat`
+覆盖；要单独求值就直接 import 它的 `dsh-app-boot`：
 
 ```js
-// ELECTRON_RUN_AS_NODE=1 "<app>\DeepSeek Harness.exe" --expose-internals gate.mjs
+// node gate.mjs "<dsh 安装目录>\node_modules\@deepseek-ai\dsh-app-boot\lib\index.js"
 import { pathToFileURL } from 'node:url'
-const boot = await import(pathToFileURL(
-  '<app>\\resources\\app.asar\\dsh\\node_modules\\@deepseek-ai\\dsh-app-boot\\lib\\index.js').href)
+import { readFileSync } from 'node:fs'
+const boot = await import(pathToFileURL(process.argv[2]).href)
 const manifest = JSON.parse(readFileSync('package.json', 'utf8'))
 console.log(boot.getDshRuntimeVersion(), boot.evaluatePluginCompatibility(manifest) ?? 'ACCEPTED')
 ```
+
+**② 桌面版（`E:\soft\DeepSeek Harness`）**——桌面版的 DSH 包**不在 `app.asar` 里**：`0.2.0-rc.2`
+起 `resources\app.asar` 已展开成 `resources\app\`（只剩一个 `app.asar.bak`），所以闸门在
+`<app>\resources\app\dsh\node_modules\@deepseek-ai\dsh-app-boot\lib\index.js`。
+`resources\runtime\cli\bin\dsh.cmd` 那个包装脚本已经**失效**（仍按 `app.asar` 拼路径，实测
+`Cannot find module ...app.asar\dsh\node_modules\@deepseek-ai\dsh-desktop-host\lib\cli.js`），
+取版本别用它，直接读 `resources\app\dsh\package.json` 的 `version`。把上面的 `gate.mjs` 指向桌面版
+那份 `dsh-app-boot` 即可。
+
+实测（0.7.0 的 manifest）：scoop `0.2.1-rc.1` ✅、桌面版 `0.2.0-rc.2` ✅。
 
 安装日志在 `<DSH_HOME>\profiles\<profile>\.plugin-manager\logs\operation-*\pnpm.log`，被拒时会写
 `installation rejected: ... incompatible with dsh ...`——排查"装了但没生效"先看这里。
@@ -191,6 +249,8 @@ dependencies:
   可挂载——改动工具注册/渲染时，`src/` 与产物级断言都要覆盖。
 - **锁文件 = 已验证版本**：CI / 发布都用 `pnpm install --frozen-lockfile`；`pnpm-workspace.yaml` 的
   `minimumReleaseAgeExclude` 只列包名**不列版本**（DSH 发布当天即可安装；cordis / schemastery 例外）。
-- **peer 下限只由"我们跑不了更老的版本"决定**，当前是 `>=0.1.7-0`。上游发新版不构成抬下限的理由；
-  真的遇到破坏性变更、必须改代码才能发布时，按 §1「破坏性变更时」把下限一起抬上去。
+- **运行时下限只由"我们跑不了更老的版本"决定**，当前是 `>=0.1.7-0`（peer 与 `package.json` 的
+  `engines.dsh` 必须一致）。上游发新版不构成抬下限的理由；真的遇到破坏性变更、必须改代码才能发布时，
+  按 §1「破坏性变更时」把下限一起抬上去。**devDependencies 是构建目标，不是运行时承诺**：它随
+  运行中的 harness 走（可以是 `>=0.2.1-rc.1` 这种更新的 tuple），只要求不低于 peer 下限。
 - 运行中的宿主会缓存已加载模块：改完渲染/工具后需**重启或热重载**才能在实机看到效果。

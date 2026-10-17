@@ -5,12 +5,12 @@
 # else (a new harness release would be blocked at install time). Cordis and
 # schemastery are versioned independently of DSH, so they stay pinned.
 minimumReleaseAgeExclude:
-  - '@deepseek-ai/cordis-plugin-group@1.0.3'
-  - '@deepseek-ai/cordis-plugin-include@1.0.8'
-  - '@deepseek-ai/cordis-plugin-loader@1.0.4'
+  - '@deepseek-ai/cordis-plugin-group@1.0.5'
+  - '@deepseek-ai/cordis-plugin-include@1.0.10'
+  - '@deepseek-ai/cordis-plugin-loader@1.0.6'
   - '@deepseek-ai/cordis'
-  - '@deepseek-ai/cosmokit@1.8.4'
-  - '@deepseek-ai/schemastery@3.18.3'
+  - '@deepseek-ai/cosmokit@1.8.5 || 1.8.6'
+  - '@deepseek-ai/schemastery@3.18.4 || 3.18.5'
   - '@deepseek-ai/dsh-agent'
   - '@deepseek-ai/dsh-agent-preset-registry'
   - '@deepseek-ai/dsh-app-boot'
@@ -21,8 +21,8 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-compaction'
   - '@deepseek-ai/dsh-compaction-image-offload'
   - '@deepseek-ai/dsh-config-editor'
+  - '@deepseek-ai/dsh-fs'
   - '@deepseek-ai/dsh-home-paths'
-  - '@deepseek-ai/dsh-invariants'
   - '@deepseek-ai/dsh-launch-environment'
   - '@deepseek-ai/dsh-llm'
   - '@deepseek-ai/dsh-package-manifest'
@@ -50,3 +50,5 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-util-crypto'
   - '@deepseek-ai/dsh-util-values'
   - '@deepseek-ai/dsh-workspace'
+  - '@deepseek-ai/dsh-working-directory'
+

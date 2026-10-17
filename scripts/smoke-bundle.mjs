@@ -102,4 +102,96 @@ assert.deepEqual(JSON.parse(JSON.stringify(windowed)), windowed)
 // The artifact must not ship a stale DSH copy (the 0.3.3 regression).
 assert.ok(!readFileSync(BUNDLE, 'utf8').includes('0.1.7-alpha'), 'lib/index.js must not inline alpha DSH code')
 
+// --- chain-of-thought loop guard (0.6.0) -------------------------------------
+// Two artifact-level contracts that src/ tests cannot prove: (1) the bundle that
+// actually runs was REBUILT with the guard, and (2) the new knobs are exposed on
+// the tool the host reads. The stub host above deliberately has no
+// agents.roots()/isOwnedBy() — the guard must degrade gracefully there, which is
+// also the case for older harnesses.
+const monitorTool = tools.get('session_bridge_monitor_start')
+const monitorParams = JSON.stringify(monitorTool.parameters ?? {})
+for (const name of [
+  'loopGuard', 'loopField', 'loopMinCycles', 'loopMinRepeats', 'loopMinConfidence', 'loopMinHits',
+  'loopCooldownMs', 'loopMaxTransfers', 'loopTransfer', 'loopAutoMonitor', 'loopDescendants',
+  'loopHandoffPrompt', 'loopTransferDepth',
+]) {
+  assert.ok(monitorParams.includes(name), 'session_bridge_monitor_start must declare ' + name)
+}
+assert.ok(String(monitorTool.description).includes('chain-of-thought LOOPS'), 'the tool description advertises loop detection')
+const bundleText = readFileSync(BUNDLE, 'utf8')
+for (const marker of ['chain-of-thought loop detected', 'LOOP-TRANSFER', 'LOOP-SUBAGENT-CANCEL', 'transfer budget exhausted', '仍在运行的子代理']) {
+  assert.ok(bundleText.includes(marker), 'the rebuilt bundle must inline the loop guard: ' + marker)
+}
+
+const started = await monitorTool.execute({ sessionId: 'loop-target', loopDescendants: 'report', loopMaxTransfers: 2 }, {})
+assert.equal(started.monitor.config.loopDescendants, 'report')
+assert.equal(started.monitor.config.loopMaxTransfers, 2)
+const monitorText = tools.get('session_bridge_monitor_list').output.render({}, await tools.get('session_bridge_monitor_list').execute({}, {})).map((block) => block.text).join('\n')
+assert.ok(monitorText.includes('loopGuard: on'), 'monitor_list renders the loop guard line')
+assert.ok(monitorText.includes('descendants=report'))
+assert.equal(await tools.get('session_bridge_monitor_stop').execute({ sessionId: 'loop-target' }, {}).then((value) => value.wasActive), true)
+
+// --- plugin switch + /cot-loop command (0.7.0) --------------------------------
+// Two artifact-level contracts: (1) the bundle exports the volatile Config that
+// the Plugins settings form renders (dsh-settings only shows volatile fields),
+// and (2) the /cot-loop slash command is registered against a host command
+// surface, sharing that same config.
+assert.ok(mod.Config !== undefined, 'lib/index.js must export Config (the settings form reads it)')
+const configJson = mod.Config.toJSON()
+const configRoot = configJson.refs?.[String(configJson.uid)] ?? configJson
+const configFields = Object.keys(configRoot.dict ?? {})
+assert.ok(configFields.includes('loopGuard'), 'Config must expose loopGuard (the settings switch)')
+for (const field of configFields) {
+  const node = configJson.refs?.[String(configRoot.dict[field])] ?? configRoot.dict[field]
+  assert.equal(node.meta?.volatile, true, 'Config.' + field + ' must be volatile so dsh-settings renders it')
+}
+
+const commands = []
+const switchEdits = []
+const tools2 = new Map()
+const ctx2 = {
+  ...ctx,
+  tools: { register: (tool) => { tools2.set(tool.name, tool) } },
+  inject: (names, callback) => {
+    const child = {}
+    if (names.includes('commands')) child.commands = { register: (definition) => { commands.push(definition) } }
+    if (names.includes('configEditor')) {
+      child.configEditor = {
+        entries: () => [{ options: { id: 'dsh-session-bridge' } }],
+        edit: async (entry, change) => { switchEdits.push(change({}, {})) },
+      }
+    }
+    callback(child)
+  },
+}
+mod.apply(ctx2, { loopGuard: false })
+await new Promise((done) => setTimeout(done, 50))
+
+assert.equal(commands.length, 1, 'apply() must register the /cot-loop command when the host has a command surface')
+assert.equal(commands[0].name, 'cot-loop')
+assert.ok(String(commands[0].input?.hint ?? '').includes('off'), 'the command advertises its input')
+const switchStatus = await commands[0].handler({ rawInput: 'status' })
+assert.equal(switchStatus.kind, 'success')
+assert.ok(switchStatus.text.includes('关闭'), 'status must report the configured switch state (off)')
+assert.ok(switchStatus.text.includes('loopGuard'), 'status must name the settings field')
+
+const switchOn = await commands[0].handler({ rawInput: 'on' })
+assert.equal(switchOn.kind, 'success')
+assert.deepEqual(switchEdits.at(-1), { loopGuard: true }, 'the command writes loopGuard into the plugin config')
+assert.ok(switchOn.text.includes('已写入插件配置'), 'a persisted switch says so')
+
+// The disabled plugin switch must show up on the monitor surface (and, in the
+// guard itself, short-circuit loop detection for every monitor).
+const switchStarted = await tools2.get('session_bridge_monitor_start').execute({ sessionId: 'switch-target' }, {})
+assert.equal(switchStarted.monitor.config.sessionId, 'switch-target')
+const switchText = tools2.get('session_bridge_monitor_list').output
+  .render({}, await tools2.get('session_bridge_monitor_list').execute({}, {}))
+  .map((block) => block.text).join('\n')
+assert.ok(switchText.includes('plugin switch'), 'monitor_list shows the plugin-level switch is off')
+
+const bundleWithSwitch = readFileSync(BUNDLE, 'utf8')
+for (const marker of ['cot-loop', '思维链循环自动中断', 'volatile']) {
+  assert.ok(bundleWithSwitch.includes(marker), 'the rebuilt bundle must inline the switch wiring: ' + marker)
+}
+
 console.log('smoke-bundle: OK — lib/index.js mounts and registers ' + String(tools.size) + ' tools')

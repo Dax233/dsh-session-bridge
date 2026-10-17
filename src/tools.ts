@@ -2,13 +2,11 @@
  * dsh-session-bridge 模型面向工具：create / send / resume / wait / read / find。
  * 全部经插件宿主 ctx 操作真实 DSH 会话（顶层主会话与任意其它会话）。
  */
-import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import type { Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
-import * as agentApi from '@deepseek-ai/dsh-agent'
 import type {
   BridgeFindItem,
   BridgeMessageRow,
@@ -33,8 +31,10 @@ import {
   workspaceByPath,
   workspaceBySession,
 } from './core.ts'
+import { createBridgeSession, type BridgeSessionCaller } from './session-create.ts'
 import type { BridgeRegistry } from './registry.ts'
 import type { SessionMonitor, MonitorConfig, MonitorEntryState, CoTRule } from './monitor.ts'
+import type { LoopPolicy } from './config.ts'
 
 type SessionIdBrand = { readonly __sessionIdBrand?: never }
 
@@ -42,11 +42,8 @@ export interface BridgeEnv {
   ctx: Context
   registry: BridgeRegistry
   monitor: SessionMonitor
-}
-
-interface ModelSelectionRef {
-  current: { provider?: string; model?: string; reasoningEffort?: string } | undefined
-  assembled?: undefined
+  /** 插件级循环策略（总开关 + 全局默认值）：渲染与默认值都读它。 */
+  policy: LoopPolicy
 }
 
 function asJson(value: unknown): Record<string, JsonValue> {
@@ -176,107 +173,33 @@ function registerCreate(env: BridgeEnv): void {
     },
     async execute(args: CreateArgs, exec) {
       const caller = exec.agent as LiveAgentLike | undefined
-      const callerCwd = caller?.session.header.cwd
-      const targetCwd = await resolveTargetCwd(env.ctx, callerCwd, args)
-      const callerHeader = caller?.session.requestHeader?.()
-      const provider = typeof args.provider === 'string' && args.provider !== '' ? args.provider : callerHeader?.config?.provider ?? ''
-      const model = typeof args.model === 'string' && args.model !== '' ? args.model : callerHeader?.config?.model ?? ''
-      const reasoningEffort = typeof args.reasoningEffort === 'string' && args.reasoningEffort !== '' ? args.reasoningEffort : callerHeader?.config?.reasoningEffort
-
-      const selection: ModelSelectionRef = {
-        current: {
-          ...(provider !== '' ? { provider } : {}),
-          ...(model !== '' ? { model } : {}),
-          ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-        }
-      }
-      const installModelSelection = (agentApi as unknown as { installModelSelection?: (agentCtx: Context, selection: ModelSelectionRef) => () => void }).installModelSelection
-
-      const sessionId = `sb-${randomUUID()}`
-      const agents = env.ctx.agents as unknown as {
-        create(options: { sessionId: string; meta?: { cwd?: string; agentPreset?: string }; agentOptions?: Record<string, unknown>; setup?: (agentCtx: Context) => void }): Promise<{ agent: LiveAgentLike }>
-      }
-      const handle = await agents.create({
-        sessionId,
-        meta: {
-          cwd: targetCwd,
-          ...(typeof args.agentPreset === 'string' && args.agentPreset.trim() !== '' ? { agentPreset: args.agentPreset.trim() } : {}),
-        },
-        agentOptions: {
-          ...(provider !== '' ? { provider } : {}),
-          ...(model !== '' ? { model } : {}),
-          ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-        },
-        setup: async (agentCtx: Context) => {
-          const requestedPreset = typeof args.agentPreset === 'string' && args.agentPreset.trim() !== '' ? args.agentPreset.trim() : undefined
-          if (requestedPreset !== undefined) {
-            // An explicit agentPreset composes THAT preset. Falling through to the
-            // caller-join below would silently ignore the request: the id would
-            // still reach the session header, while the agent kept running on the
-            // caller's standing composition and its tools.
-            const presets = env.ctx.agentPresets as unknown as { mount(agentCtx: Context, id: string): Promise<unknown> }
-            await presets.mount(agentCtx, requestedPreset)
-          } else if (caller !== undefined) {
-            const presets = env.ctx.agentPresets as unknown as { composeFrom(agentCtx: Context, parentCtx: Context): string | undefined }
-            presets.composeFrom(agentCtx, caller.ctx)
-          }
-          if (installModelSelection !== undefined) {
-            installModelSelection(agentCtx, selection)
-            return
-          }
-          // fallback: rewrite the request config only (model selection split is acceptable)
-          const hookable = agentCtx as unknown as { on(name: string, listener: (...args: unknown[]) => unknown): unknown }
-          hookable.on('agent/request', async (payload: unknown, next: unknown) => {
-            const nxt = next as () => Promise<Record<string, unknown>>
-            const resolved = await nxt()
-            const sel = selection.current
-            if (sel === undefined) return resolved
-            const { reasoningEffort: _drop, ...rest } = resolved
-            return {
-              ...rest,
-              ...(sel.provider === undefined ? {} : { provider: sel.provider }),
-              ...(sel.model === undefined ? {} : { model: sel.model }),
-              ...(sel.reasoningEffort === undefined ? {} : { reasoningEffort: sel.reasoningEffort }),
-            }
-          })
-        },
-      })
-
-      const agent = handle.agent
-      // 镜像 session-controller.create 的记账：把新会话计入其 cwd 所属的
-      // workspace，否则会话出现在 UI "未分组"（workspace sessionIds 只经
-      // attach/bootstrap 两条路径记账）。
-      const workspaceId = await attachSessionToWorkspace(env.ctx, sessionId as SessionId, targetCwd) ?? workspaceByPath(env.ctx, targetCwd)
-      env.registry.record({
-        sessionId,
-        ...(typeof args.title === 'string' && args.title.trim() !== '' ? { title: args.title.trim() } : {}),
-        cwd: targetCwd,
-        ...(workspaceId === undefined ? {} : { workspaceId }),
-        ...(provider !== '' ? { provider } : {}),
-        ...(model !== '' ? { model } : {}),
-        source: 'create',
+      // 创建逻辑与守护循环的「循环转移」共用一条路径（session-create.ts）：
+      // 模型继承、预设组合、workspace 记账、桥侧登记只保留一份实现，避免两处漂移。
+      const created = await createBridgeSession(env.ctx, env.registry, {
+        ...(caller === undefined ? {} : { caller: { ctx: caller.ctx, session: caller.session as unknown as BridgeSessionCaller['session'] } }),
+        callerCwd: caller?.session.header.cwd,
+        ...(typeof args.workspaceId === 'string' ? { workspaceId: args.workspaceId } : {}),
+        ...(typeof args.cwd === 'string' ? { cwd: args.cwd } : {}),
+        ...(typeof args.title === 'string' ? { title: args.title } : {}),
+        ...(typeof args.prompt === 'string' ? { prompt: args.prompt } : {}),
+        ...(typeof args.agentPreset === 'string' ? { agentPreset: args.agentPreset } : {}),
+        ...(typeof args.provider === 'string' ? { provider: args.provider } : {}),
+        ...(typeof args.model === 'string' ? { model: args.model } : {}),
+        ...(typeof args.reasoningEffort === 'string' ? { reasoningEffort: args.reasoningEffort } : {}),
       })
 
       let reply: ReturnType<typeof renderWait> | undefined
-      // 发送 prompt 之前的日志锚点：异步创建时交还调用方，供之后精确 wait 取回首条回复。
-      // 新建会话的 maxSeq 为 -1（尚无事件），所以"未发送"用 undefined 哨兵而不是数值比较。
-      let createBaseline: number | undefined
-      if (typeof args.prompt === 'string' && args.prompt.trim() !== '') {
-        const baseline = maxSeq(sessionEvents(agent.session))
-        createBaseline = baseline
-        agent.followup(userMessage(args.prompt.trim()))
-        env.registry.touch(sessionId)
-        if (args.waitForReply === true) {
-          reply = await maybeWait(env, agent.session, baseline, args, exec.signal)
-        }
+      // 只有真的发了 prompt 才有锚点（baselineSeq）可等；未发 prompt 时 waitForReply 无意义。
+      if (args.waitForReply === true && created.baselineSeq !== undefined) {
+        reply = await maybeWait(env, created.agent.session, created.baselineSeq, args, exec.signal)
       }
 
       return asJson({
-        sessionId,
-        cwd: targetCwd,
-        ...(workspaceId === undefined ? {} : { workspaceId }),
+        sessionId: created.sessionId,
+        cwd: created.cwd,
+        ...(created.workspaceId === undefined ? {} : { workspaceId: created.workspaceId }),
         ...(typeof args.title === 'string' && args.title.trim() !== '' ? { title: args.title.trim() } : {}),
-        ...(reply === undefined && createBaseline !== undefined ? { sinceSeq: createBaseline } : {}),
+        ...(reply === undefined && created.baselineSeq !== undefined ? { sinceSeq: created.baselineSeq } : {}),
         ...(reply === undefined ? {} : { reply }),
       })
     },
@@ -825,6 +748,19 @@ interface MonitorStartArgs {
   label?: string
   coRules?: Array<{ match?: string; field?: string; value?: string; action?: string; message?: string }>
   cotMinHits?: number
+  loopGuard?: boolean
+  loopField?: string
+  loopMinCycles?: number
+  loopMinRepeats?: number
+  loopMinConfidence?: number
+  loopMinHits?: number
+  loopCooldownMs?: number
+  loopMaxTransfers?: number
+  loopTransfer?: boolean
+  loopAutoMonitor?: boolean
+  loopDescendants?: string
+  loopHandoffPrompt?: string
+  loopTransferDepth?: number
 }
 
 /** 校验并规范化 coRules 参数为 CoTRule[]；非法项抛清晰错误。 */
@@ -844,13 +780,25 @@ function parseCoRules(raw: Array<{ match?: string; field?: string; value?: strin
   })
 }
 
-function renderMonitorState(entry: MonitorEntryState): string[] {
+function renderMonitorState(entry: MonitorEntryState, policy?: LoopPolicy): string[] {
   const lines: string[] = []
   lines.push(`monitoring ${entry.config.sessionId}${entry.config.label === undefined ? '' : ' ("' + entry.config.label + '")'}`)
   lines.push(`interval: ${entry.config.intervalMs}ms | stalled: ${String(entry.config.stalledMs ?? 60000)}ms | maxStuck: ${String(entry.config.maxStuckCycles ?? 3)}`)
   lines.push(`cycles: ${entry.cycles} | stuck: ${entry.stuckCount} | lastAction: ${entry.lastAction}`)
   const cotCount = (entry.config.coTRules ?? []).length
   if (cotCount > 0) lines.push(`coRules: ${cotCount} rule(s) (minHits ${String(entry.config.cotMinHits ?? 1)})`)
+  if (entry.config.loopGuard === false) {
+    lines.push('loopGuard: off (this monitor only)')
+  } else if (policy !== undefined && !policy.enabled()) {
+    lines.push('loopGuard: off (plugin switch — /cot-loop on, or Settings → Plugins → dsh-session-bridge)')
+  } else {
+    const loopState = entry.loop
+    const transfers = loopState === undefined ? [] : loopState.transfers
+    const depth = entry.config.loopTransferDepth ?? 0
+    const path = transfers.length === 0 ? '' : ' (' + transfers.map((t) => t.from + ' → ' + t.to).join(', ') + ')'
+    lines.push(`loopGuard: on field=${entry.config.loopField ?? 'reasoning'} ${String(entry.config.loopMinCycles ?? 2)}x${String(entry.config.loopMinRepeats ?? 3)} conf>=${String(entry.config.loopMinConfidence ?? 0.6)} descendants=${entry.config.loopDescendants ?? 'report'}${depth === 0 ? '' : ' depth=' + String(depth)}`
+      + ` | transfers: ${transfers.length}${path}, subagent cancels: ${String(loopState === undefined ? 0 : loopState.subagentCancels)}`)
+  }
   if (entry.lastNote !== '') lines.push(`note: ${entry.lastNote}`)
   if (entry.done) lines.push('done: yes')
   return lines
@@ -859,7 +807,8 @@ function renderMonitorState(entry: MonitorEntryState): string[] {
 function registerMonitor(env: BridgeEnv): void {
   env.ctx.tools.register(defineTool({
     name: 'session_bridge_monitor_start',
-    description: 'Start a background watchdog on a main session: poll its progress at an interval, and automatically schedule — steer the session when it stalls (or, with useLlm, when it drifts off-track), cancel it when it stays stuck past maxStuckCycles, and stop when a done keyword appears while idle. It can also enforce chain-of-thought rules via coRules: e.g. coRules=[{match:"not-contains",field:"reasoning",value:"I\'m",action:"cancel"}] stops the session the moment its live reasoning stops containing I\'m (evaluated on each poll while running). This is the "monitor worker" that watches a main task thread and corrects/stops it. Uses session_bridge_status-style facts; pass sessionId of a live session. Returns the watchdog state.',
+    description: 'Start a background watchdog on a main session: poll its progress at an interval, and automatically schedule — steer the session when it stalls (or, with useLlm, when it drifts off-track), cancel it when it stays stuck past maxStuckCycles, and stop when a done keyword appears while idle. It can also enforce chain-of-thought rules via coRules: e.g. coRules=[{match:"not-contains",field:"reasoning",value:"I\'m",action:"cancel"}] stops the session the moment its live reasoning stops containing I\'m (evaluated on each poll while running). This is the "monitor worker" that watches a main task thread and corrects/stops it. Uses session_bridge_status-style facts; pass sessionId of a live session. Returns the watchdog state.'
+      + ' It also detects chain-of-thought LOOPS by default — the same content repeated over and over (e.g. "写。好。Go。写。好。Go。写。好。Go。"). A stall check cannot catch this (every cycle lands new events, so the target never looks stalled), so on a loop the watchdog interrupts the session and TRANSFERS the task to a new session, which receives a handoff prompt (original session id, task, recent context, and the descendant list) and is watched by default. Subagents: still-running descendants are left running and listed in the handoff (default loopDescendants="report" — never cancelled), loopDescendants="stop" cancels them before transferring, "ignore" drops them. A subagent session that loops is only cancelled, never transferred (that would break the execution tree). Knobs: loopGuard, loopField (reasoning|text|both), loopMinCycles, loopMinRepeats, loopMinConfidence, loopMinHits, loopCooldownMs, loopMaxTransfers (default 3, also the transfer-depth cap), loopTransfer, loopAutoMonitor, loopDescendants, loopHandoffPrompt, loopTransferDepth. A PLUGIN-LEVEL switch (config field loopGuard, toggled with the /cot-loop slash command or Settings → Plugins → dsh-session-bridge) disables loop detection for every monitor at once; passing loopGuard=false here does the same for this monitor alone.',
     parameters: {
       sessionId: { type: 'string', required: true, description: 'Target main session id to watch (must be live).' },
       intervalMs: { type: 'number', description: 'Poll interval in ms (default 10000, min 5000).' },
@@ -878,6 +827,19 @@ function registerMonitor(env: BridgeEnv): void {
         message: { type: 'string', description: 'Custom steer text (default is a guidance prompt).' },
       } }, description: 'Chain-of-thought rules: when a rule stays matched for cotMinHits consecutive polls (default 1), trigger its action. Example: [{match:"not-contains",field:"reasoning",value:"I\'m",action:"cancel"}] stops the session the moment its live reasoning no longer contains I\'m.' },
       cotMinHits: { type: 'number', description: 'How many consecutive matched polls before a CoT rule fires (default 1 = immediately).' },
+      loopGuard: { type: 'boolean', description: 'Chain-of-thought LOOP detection with automatic task transfer: false disables it (default true).' },
+      loopField: { type: 'string', enum: ['reasoning', 'text', 'both'], description: 'Which field to scan for loops (default reasoning = live chain-of-thought).' },
+      loopMinCycles: { type: 'number', description: 'Minimum number of repeated cycles (default 2).' },
+      loopMinRepeats: { type: 'number', description: 'Minimum repeats of the unit (default 3); the effective floor is max(loopMinCycles, loopMinRepeats).' },
+      loopMinConfidence: { type: 'number', description: 'Confidence threshold 0..1 (default 0.6).' },
+      loopMinHits: { type: 'number', description: 'Consecutive polls with the same loop signature before firing (default 1 = first hit).' },
+      loopCooldownMs: { type: 'number', description: 'Cooldown in ms before the same signature may fire again (default max(intervalMs*2, 30000)).' },
+      loopMaxTransfers: { type: 'number', description: 'Max task transfers (default 3); also the transfer-depth cap.' },
+      loopTransfer: { type: 'boolean', description: 'When false a detected loop only cancels the session (default true = transfer the task to a new session).' },
+      loopAutoMonitor: { type: 'boolean', description: 'When false the newly created successor session is not watched (default true).' },
+      loopDescendants: { type: 'string', enum: ['report', 'stop', 'ignore'], description: 'Subagent policy: report (default) lists running subagents in the handoff and leaves them running; stop cancels them before transferring; ignore drops them entirely.' },
+      loopHandoffPrompt: { type: 'string', description: 'Custom handoff prompt template. Placeholders: {{sessionId}} {{cwd}} {{reason}} {{task}} {{evidence}} {{descendants}}.' },
+      loopTransferDepth: { type: 'number', description: 'Current transfer depth (internal; the watchdog passes depth+1 to the successor session).' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true },
@@ -885,7 +847,7 @@ function registerMonitor(env: BridgeEnv): void {
         const v = value as Record<string, unknown>
         const entry = v.monitor as MonitorEntryState | null
         if (entry === null || entry === undefined) return [{ type: 'text' as const, text: 'monitor not started' }]
-        return [{ type: 'text' as const, text: renderMonitorState(entry).join('\n') }]
+        return [{ type: 'text' as const, text: renderMonitorState(entry, env.policy).join('\n') }]
       },
     },
     async execute(args: MonitorStartArgs) {
@@ -902,6 +864,19 @@ function registerMonitor(env: BridgeEnv): void {
         ...(typeof args.label === 'string' && args.label.trim() !== '' ? { label: args.label.trim() } : {}),
         ...(Array.isArray(args.coRules) && args.coRules.length > 0 ? { coTRules: parseCoRules(args.coRules) } : {}),
         ...(typeof args.cotMinHits === 'number' && Number.isInteger(args.cotMinHits) && args.cotMinHits >= 1 ? { cotMinHits: Math.floor(args.cotMinHits) } : {}),
+        ...(args.loopGuard === false ? { loopGuard: false } : {}),
+        ...(args.loopField === 'reasoning' || args.loopField === 'text' || args.loopField === 'both' ? { loopField: args.loopField } : {}),
+        ...(typeof args.loopMinCycles === 'number' ? { loopMinCycles: Math.floor(args.loopMinCycles) } : {}),
+        ...(typeof args.loopMinRepeats === 'number' ? { loopMinRepeats: Math.floor(args.loopMinRepeats) } : {}),
+        ...(typeof args.loopMinConfidence === 'number' ? { loopMinConfidence: args.loopMinConfidence } : {}),
+        ...(typeof args.loopMinHits === 'number' ? { loopMinHits: Math.floor(args.loopMinHits) } : {}),
+        ...(typeof args.loopCooldownMs === 'number' ? { loopCooldownMs: Math.floor(args.loopCooldownMs) } : {}),
+        ...(typeof args.loopMaxTransfers === 'number' ? { loopMaxTransfers: Math.floor(args.loopMaxTransfers) } : {}),
+        ...(args.loopTransfer === false ? { loopTransfer: false } : {}),
+        ...(args.loopAutoMonitor === false ? { loopAutoMonitor: false } : {}),
+        ...(args.loopDescendants === 'report' || args.loopDescendants === 'stop' || args.loopDescendants === 'ignore' ? { loopDescendants: args.loopDescendants } : {}),
+        ...(typeof args.loopHandoffPrompt === 'string' && args.loopHandoffPrompt.trim() !== '' ? { loopHandoffPrompt: args.loopHandoffPrompt } : {}),
+        ...(typeof args.loopTransferDepth === 'number' ? { loopTransferDepth: Math.floor(args.loopTransferDepth) } : {}),
       }
       const entry = env.monitor.start(config)
       env.registry.touch(args.sessionId)
@@ -939,7 +914,7 @@ function registerMonitor(env: BridgeEnv): void {
         const v = value as Record<string, unknown>
         const entries = (v.monitors as MonitorEntryState[] | null) ?? []
         if (entries.length === 0) return [{ type: 'text' as const, text: '(no active monitors)' }]
-        return [{ type: 'text' as const, text: entries.map((e) => renderMonitorState(e).join('\n')).join('\n---\n') }]
+        return [{ type: 'text' as const, text: entries.map((e) => renderMonitorState(e, env.policy).join('\n')).join('\n---\n') }]
       },
     },
     async execute() {

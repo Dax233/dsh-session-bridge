@@ -8,6 +8,7 @@ import type { Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import { WorkspaceId, type Workspace } from '@deepseek-ai/dsh-workspace'
+import type { BridgeDescendantInfo } from './handoff.ts'
 
 /** Live 会话 agent 的运行时形态（dsh-agent 公开类型较薄，用结构类型）。 */
 export interface LiveAgentLike {
@@ -741,4 +742,83 @@ export function cancelLiveSession(ctx: Context, sessionId: string, keepInbox: bo
     : { kind: 'user' }
   agent.cancel(cause, { keepInbox })
   return true
+}
+
+/**
+ * 目标会话是否是**顶层**会话（而不是某个 agent 派生的子代理）。
+ *
+ * 判据是 dsh-agent 的 `AgentRegistry.roots()`：它返回"创建时没有 owner"的 agent
+ * （`entry.owner === undefined`），其注释明确"durable session lineage 不影响该运行时
+ * 关系"。桥创建的会话与 UI 主会话都是顶层。
+ *
+ * 返回 undefined 表示**无法判定**（宿主没有 roots API，例如旧 harness 或测试桩）——
+ * 调用方应按顶层处理，保持旧行为，而不是改判成子代理。
+ */
+export function isRootAgent(ctx: Context, sessionId: string): boolean | undefined {
+  const agents = ctx.agents as unknown as { roots?: () => LiveAgentLike[] }
+  if (typeof agents.roots !== 'function') return undefined
+  try {
+    return agents.roots().some((agent) => agent.id === sessionId)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 收集某个会话**直接派生**的子代理快照（循环转移时的交接清单用）。
+ *
+ * 归属判定优先用 `AgentRegistry.isOwnedBy(id, owner)`（`store.get(id)?.owner === owner`，
+ * 精确到运行时父子关系，且"运行时归属与持久化谱系无关"）；宿主没有该方法时回落到
+ * session header 的 `parentSession`（持久化信息，重启后仍可读，但会把 fork 出来的
+ * 会话也算进来，故仅作兜底）。
+ *
+ * 只读；任何一步异常都不抛出——宁可少列一个子代理，也不能让转移流程失败。
+ */
+export function collectDescendants(ctx: Context, owner: LiveAgentLike): BridgeDescendantInfo[] {
+  const agents = ctx.agents as unknown as {
+    list?: () => LiveAgentLike[]
+    isOwnedBy?: (id: string, owner: LiveAgentLike) => boolean
+  }
+  let list: LiveAgentLike[]
+  try {
+    list = typeof agents.list === 'function' ? agents.list() : []
+  } catch {
+    return []
+  }
+  const owned: LiveAgentLike[] = []
+  for (const candidate of list) {
+    if (candidate === owner || candidate.id === owner.id) continue
+    if (typeof agents.isOwnedBy === 'function') {
+      let byOwner = false
+      try { byOwner = agents.isOwnedBy(candidate.id, owner) } catch { byOwner = false }
+      if (byOwner) owned.push(candidate)
+      continue
+    }
+    const lineage = candidate.session?.header as { parentSession?: string } | undefined
+    if (lineage?.parentSession === owner.id) owned.push(candidate)
+  }
+  return owned.map((child) => {
+    const header = child.session.header as { origin?: 'subagent'; delegationDepth?: number }
+    const task = firstUserText(foldMessages(sessionEvents(child.session)))
+    return {
+      id: child.id,
+      status: child.status,
+      running: child.status === 'running',
+      ...(header.origin === undefined ? {} : { origin: header.origin }),
+      ...(header.delegationDepth === undefined ? {} : { delegationDepth: header.delegationDepth }),
+      // 400 字符：够新会话认出这个子代理在做什么，又不让清单膨胀。
+      ...(task === undefined ? {} : { task: clipText(task, 400) }),
+    }
+  })
+}
+
+/** 截断到 limit 字符（超出加省略号）。 */
+function clipText(text: string, limit: number): string {
+  return text.length > limit ? text.slice(0, limit) + '…' : text
+}
+
+/** 事件日志里第一条用户指令（子代理领到的任务描述）。 */
+function firstUserText(rows: readonly BridgeMessageRow[]): string | undefined {
+  for (const row of rows) if (row.role === 'user' && row.text !== undefined) return row.text
+  return undefined
 }

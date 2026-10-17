@@ -1,7 +1,9 @@
 # dsh-session-bridge — 会话桥 (Session bridge)
 
-Targets DSH **0.1.7-0 and later**: the peer range declares a floor only
-(`>=0.1.7-0`), never a ceiling; verified against **0.2.0-rc.2**. See
+Targets DSH **0.1.7-0 and later**: both the peer ranges and `package.json`'s
+`engines.dsh` declare a floor only (`>=0.1.7-0`), never a ceiling. Since DSH
+**0.2.1-rc.1** `engines.dsh` decides alone (when present, `peerDependencies` are
+ignored), so the two state the same floor; verified against **0.2.1-rc.1**. See
 [compatibility changes](CHANGELOG.md) and [AGENTS.md](./AGENTS.md) (the version
 policy is a hard rule, guarded by `pnpm test`).
 
@@ -63,7 +65,9 @@ action does.
   stops a running session. `session_bridge_monitor_start` runs a **background
   watchdog loop** that polls the task, nudges it when it stalls, corrects it
   when it drifts, terminates it after it stays stuck, and wraps up when it
-  finishes.
+  finishes. When the **chain-of-thought loops** (e.g. `写。好。Go。` over and
+  over) it interrupts the session and **transfers the task to a new session**
+  (with the subagent list carried over) so the work continues.
 - **Archive / unarchive sessions.** `session_bridge_archive` adds a session to
   the DSH workspace archive set (hidden from every grouping surface, history and
   workspace position preserved); an active target is refused unless
@@ -90,6 +94,9 @@ action does.
 | `running` and no event for more than `stalledMs` | Record a stall → `steer` a nudge (with `useLlm`, judge `offtrack`/`stuck` first) |
 | Stall repeats ≥ `maxStuckCycles` | `cancel` the session |
 | Making progress | Reset the stall counter (steady) |
+| `running` and the chain-of-thought loops (on by default) | Create a successor session carrying the task → interrupt the old one (transfer, log `LOOP-TRANSFER`) |
+| Loop, but the transfer budget is exhausted / `loopTransfer: false` | Interrupt only (log `LOOP-CANCEL`) |
+| **A subagent's** chain-of-thought loops | Cancel that subagent + `steer` the main session to re-delegate (**no transfer**) |
 
 The watchdog only treats **running** sessions as stalled, so a finished or idle
 task is wrapped up rather than nudged forever (the `[STALLED]` marker in
@@ -133,11 +140,116 @@ time — not just its final reply — and act on it:
   don't stream a chain-of-thought. Repeated fires are throttled by a cooldown,
   and each evaluation/trigger is written to the monitor log.
 
+### Chain-of-thought loop detection & task transfer
+
+**Why the stall check cannot catch a loop:** a looping session lands new events every cycle, so
+"ms since the last event" stays tiny and `stalledMs` never crosses the threshold — the stall
+branch is **blind** to loops by construction. A loop therefore has to be judged from the
+**content** itself.
+
+Judging it (`src/loop-guard.ts` — pure functions, no host dependency): split the chain-of-thought
+into units on `。！？；!?;` and newlines (**punctuation stays inside the unit**, so `写。` and `好。`
+are different units), then look for a periodic repeat of a small run inside a **tail window**
+(1200 chars). Measured: `写。/好。/Go。` ×3 → `period=3 repeats=3` fires; `3 units × 2 rounds` and
+`2 units × 2 rounds` do not (the repeat floor is 3); long ordinary reasoning does not fire; a long
+prefix cannot hide a tail loop; punctuation-free repetition is caught by a character n-gram
+fallback (`kind=char`).
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `loopGuard` | `true` | `false` disables loop detection |
+| `loopField` | `reasoning` | What to scan: `reasoning` (live chain-of-thought, `liveReasoning` first, else `lastReasoning`) / `text` / `both` |
+| `loopMinCycles` | `2` | Minimum repeated cycles |
+| `loopMinRepeats` | `3` | Minimum repeats of one unit; the **effective floor is `max(loopMinCycles, loopMinRepeats)`** |
+| `loopMinConfidence` | `0.6` | Confidence threshold (weighted by unit length, covered rounds, period length) |
+| `loopMinHits` | `1` | Consecutive polls with the same signature (field+period+unit) before acting |
+| `loopCooldownMs` | `max(intervalMs*2, 30000)` | Per-signature cooldown, so a jittery signal cannot double-fire |
+| `loopMaxTransfers` | `3` | Maximum transfers (also the **transfer-depth cap**) |
+| `loopTransfer` | `true` | `false` = interrupt only, never transfer |
+| `loopAutoMonitor` | `true` | Whether the successor session is watched too |
+| `loopDescendants` | `report` | Subagent policy, see the table below |
+| `loopHandoffPrompt` | built-in template | Custom handoff prompt; placeholders `{{sessionId}}` `{{cwd}}` `{{reason}}` `{{task}}` `{{evidence}}` `{{descendants}}` |
+
+On a hit the order is **not** negotiable: **create the successor main session in the original
+working directory and deliver the handoff prompt first, and only cancel the old session once that
+succeeded.** The reverse order (stop, then create) loses the task outright if creation fails; this
+implementation instead treats a failed creation as "keep the original watchdog, cancel nothing"
+and retries on a `max(intervalMs, 10s)` throttle. The handoff carries the original session id, the
+task instruction, the recent instructions / last reply / last chain-of-thought, and the subagent
+list — and tells the successor to `session_bridge_read` the old session log itself (no full
+transcripts inlined, to save tokens). The transfer chain inherits the same transfer record, so the
+budget does not reset with each successor.
+
+When the budget is exhausted (`loopMaxTransfers` or the depth cap) or `loopTransfer: false`, the
+watchdog **interrupts only** (log `LOOP-CANCEL`). Log lines: `LOOP-HIT` / `LOOP-TRANSFER` /
+`LOOP-TRANSFER-FAILED` / `LOOP-CANCEL` / `LOOP-SUBAGENT-CANCEL` / `LOOP-SUBAGENT-NOTIFY`.
+
+#### What happens to subagents
+
+| Scenario | Handling | Why |
+|---|---|---|
+| A. Main session loops, subagents **still running normally** | **Not cancelled**, listed in the handoff (`report`, the default) | Their work is not wasted; the successor is told not to redo it and can wait for results |
+| B. Main session loops with `loopDescendants: 'stop'` | Cancelled one by one **before** the transfer, recorded under `stopped` | You asked for a clean handoff with no orphaned work |
+| C. Main session loops with `loopDescendants: 'ignore'` | Neither cancelled nor mentioned | The subagents are irrelevant to the remaining task |
+| D. **A subagent** loops (main session fine) | Cancel that subagent + `steer` the main session to re-delegate; **no transfer** | The broken thing is the subtask, not the task; the main session knows how to re-delegate |
+| E. A **subagent session itself** is the monitored target and loops | **Cancel only, never transfer** | Its identity is a subagent; spawning a new top-level session would break the execution tree. The parent session is notified |
+
+"Who is a subagent" is decided with host capabilities first (`agents.isOwnedBy` / `roots()`), then
+falls back to the session header's `origin === 'subagent'` / `parentSession`, and finally treats the
+session as top-level — **it can under-transfer, never mis-transfer**. The transfer chain is bounded
+by `loopMaxTransfers`: a successor that loops again gets at most another transfer, then only
+interruptions, so there is no A→B→C relay.
+
+### Enabling and disabling (two ways)
+
+Loop detection is **on by default**, and both the master switch and the global defaults live in the
+**plugin config** (the `config` of this plugin's entry in the profile patch), so the two paths below
+change the **same value**:
+
+**1. The `/cot-loop` slash command** — change it from the interactive UI; it writes the config back
+and takes effect **immediately** (no restart, no plugin reload):
+
+```
+/cot-loop status                      # switch state, detection parameters, settings entry
+/cot-loop off                         # disable chain-of-thought loop auto-interrupt (globally)
+/cot-loop on                          # turn it back on
+/cot-loop field text                  # scan the final reply only (default: reasoning)
+/cot-loop descendants stop            # cancel still-running subagents before transferring
+/cot-loop max-transfers 3             # transfer budget (0 = interrupt only)
+/cot-loop help                        # every subcommand
+```
+
+Parameter changes apply from the **next** `session_bridge_monitor_start`; `on` / `off` apply to
+**already running** watchdogs at once (each tick reads the volatile reference live). When the host has
+no `configEditor` service (or the write fails) the command degrades to an **in-process switch** and
+says "this run only" — it never pretends the value was persisted.
+
+**2. The settings toggle** — Settings → Plugins → `dsh-session-bridge`: the form is rendered
+automatically from the volatile fields of `Config` (`dsh-settings` only renders volatile fields as
+controls, so this half needs no client code at all), and `loopGuard` is the master switch. Saving it
+writes the profile patch and applies immediately as well.
+
+A single watchdog can still opt out on its own:
+`session_bridge_monitor_start({ sessionId: '...', loopGuard: false })`.
+
+| Plugin config field | Default | Meaning |
+|---|---|---|
+| `loopGuard` | `true` | **Master switch**: `false` stops loop detection for every watchdog (this is what the settings page / `/cot-loop` toggles) |
+| `loopField` | `reasoning` | What to scan: `reasoning` / `text` / `both` |
+| `loopMinCycles` | `2` | Minimum repeated cycles |
+| `loopMinRepeats` | `3` | Minimum repeats of one unit |
+| `loopMinConfidence` | `0.6` | Confidence threshold |
+| `loopMinHits` | `1` | Consecutive hits before acting |
+| `loopCooldownMs` | `60000` | Per-signature cooldown in ms |
+| `loopMaxTransfers` | `3` | Transfer budget (`0` = interrupt only) |
+| `loopDescendants` | `report` | Subagent policy, see the table below |
+
 ## Requirements
 
 - [Node.js](https://nodejs.org) ≥ 20
 - [pnpm](https://pnpm.io)
-- DSH `0.1.7-0` or later (`>=0.1.7-0`; built and tested against `0.2.0-rc.2`).
+- DSH `0.1.7-0` or later (`peerDependencies` and `engines.dsh` both `>=0.1.7-0`;
+  built and tested against `0.2.1-rc.1`).
 
 ## Build
 
@@ -149,14 +261,14 @@ pnpm build
 # type-check src/ against the dsh that is actually installed (no checkout needed)
 npm run check:compat
 
-# regression tests: peer floor, wait/stall core, the archived tool handler, V3→V4 migration
+# regression tests: peer floor, wait/stall core, loop detection + handoff, watchdog loop, archived handler, V3→V4
 npm test
 
 # via the injector toolchain
 dev_build_plugin dsh-session-bridge
 ```
 
-Builds use the locked `0.2.0-rc.2` registry packages; no source checkout is
+Builds use the locked `0.2.1-rc.1` registry packages; no source checkout is
 required. `check:compat` type-checks `src/` against the installed harness and
 then compares the artifact's inlined DSH version with it: inlining something
 older than the declared floor (`0.1.7-0`) fails, any other drift is a note
@@ -300,7 +412,7 @@ registration and junction; not re-assembled on restart).
 | `session_bridge_find` | Find sessions by title / id / workspace / directory across workspaces. |
 | `session_bridge_status` | Read a session's live progress (running, open turn, stall detection, pending work, latest reply) plus live/finalized chain-of-thought (`reasoning` param); `[STALLED]` is shown for running sessions only. |
 | `session_bridge_cancel` | Stop a running session (abort active turn; clear queued/steering work unless `keepInbox`). |
-| `session_bridge_monitor_start` | Start a background watchdog on a main session (poll, nudge, correct, cancel, wrap up); supports chain-of-thought `coRules` (e.g. reasoning not-contains "I'm" → cancel). |
+| `session_bridge_monitor_start` | Start a background watchdog on a main session (poll, nudge, correct, cancel, wrap up); supports chain-of-thought `coRules` (e.g. reasoning not-contains "I'm" → cancel) and **chain-of-thought loop detection** (on by default: a hit interrupts the session and transfers the task to a new one, with a subagent policy via `loopDescendants`). |
 | `session_bridge_monitor_stop` | Stop a watchdog (keep the session itself running). |
 | `session_bridge_monitor_list` | List active watchdogs and their state. |
 | `session_bridge_archive` | Archive a session (hidden from groupings; history and position preserved); requires `stopActivity: true` for a running one. Reports the id, the archive size and the newest ids. |
@@ -317,11 +429,17 @@ src/
   index.ts    host plugin entry (registers the tools; mounts the monitor)
   core.ts     shared host logic (create/send/wait/read/find, status snapshot, archive attach)
   tools.ts    tool registrations (bridge + status/cancel + monitor + archive)
-  monitor.ts  the background watchdog loop (statusSnapshot + rules + optional LLM judge)
+  monitor.ts  the background watchdog loop (statusSnapshot + rules + loop detection/transfer + optional LLM judge)
+  loop-guard.ts  chain-of-thought loop detection (pure: unit split + tail periodic repeat + n-gram fallback)
+  handoff.ts  the handoff prompt (task/context extraction + subagent sections + template)
+  session-create.ts  the single session-creation implementation (shared by the create tool and loop transfer)
   registry.ts bridge-side title/workspace registry (~/.dsh/session-bridge-registry.json)
 scripts/
   build.sh    compatibility wrapper for npm run build
   test-bridge-core.mjs  wait/stall regression tests (npm test)
+  test-loop-guard.mjs  loop-detection regression tests (写。/好。/Go。 shapes, tail window, fallback)
+  test-handoff.mjs  handoff-prompt regression tests (placeholders + subagent sections)
+  test-monitor-loop.mjs  end-to-end watchdog loop tests (transfer, the five subagent scenarios, budget, failure)
   test-tools-archived.mjs  archive/unarchive + archived-handler regression tests (npm test)
   check-dsh-compat.mjs  type-check src/ against installed DSH + verify bundle provenance (npm run check:compat)
   smoke-bundle.mjs  mount the built lib/index.js and assert every tool registers (npm run smoke)

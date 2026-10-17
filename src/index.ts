@@ -10,6 +10,11 @@ import type { Context } from '@deepseek-ai/cordis'
 import { BridgeRegistry } from './registry.ts'
 import { SessionMonitor } from './monitor.ts'
 import { registerBridgeTools, type BridgeEnv } from './tools.ts'
+import { Config, createLoopPolicy } from './config.ts'
+import { createConfigWriter, registerLoopCommands } from './commands.ts'
+
+/** 插件配置：思维链循环自动中断的开关与全局默认值（设置页表单与 /cot-loop 共用同一份）。 */
+export { Config }
 
 /** Plugin identity for cordis rows. */
 export const name = 'dsh-session-bridge'
@@ -18,13 +23,19 @@ export const name = 'dsh-session-bridge'
 export const inject = ['sessions', 'agents', 'sessionPersistence', 'workspaceRegistry', 'agentPresets', 'tools', 'timer']
 
 /** Host plugin body. */
-export function apply(ctx: Context): void {
+export function apply(ctx: Context, config?: unknown): void {
   const registry = new BridgeRegistry()
   void registry.load().catch((error: unknown) => {
     console.warn('[dsh-session-bridge] registry load failed:', error instanceof Error ? error.message : String(error))
   })
-  const monitor = new SessionMonitor(ctx)
-  const env: BridgeEnv = { ctx, registry, monitor }
+  // 循环策略：总开关与全局默认值都从 Config 的 volatile 引用实时读取，
+  // 所以设置页/命令改开关后，运行中的守护下一个 tick 就按新值走（无需重启或重载）。
+  const policy = createLoopPolicy(config)
+  // 监控循环会把任务转移到新会话，需要 registry 做桥侧登记（与工具共用同一条创建路径）。
+  const monitor = new SessionMonitor(ctx, registry, undefined, policy)
+  const env: BridgeEnv = { ctx, registry, monitor, policy }
   registerBridgeTools(env)
+  // 斜杠命令 /cot-loop：与设置页共用同一份配置；commands 服务缺失时静默跳过。
+  registerLoopCommands(ctx, { policy, writeConfig: createConfigWriter(ctx) })
   ctx.effect(() => () => monitor.dispose())
 }
