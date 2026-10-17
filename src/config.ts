@@ -30,8 +30,35 @@ function volatile<T>(schema: T): T {
   return typeof candidate.volatile === 'function' ? candidate.volatile() : schema
 }
 
+/**
+ * 配置形状。**必须显式命名，不能靠推导**：`Config` 是导出的（设置页读它、`pnpm smoke`
+ * 也断言它），而 `tsc --emitDeclarationOnly` 要为它生成 `.d.ts`——推导出来的类型会引用
+ * pnpm 虚拟 store 里的深路径 `.pnpm/@deepseek-ai+schemastery@x.y.z/node_modules/...`，
+ * 在**干净安装**（CI/Linux）上直接失败：
+ *
+ *   src/config.ts(34,14): error TS2742: The inferred type of 'Config' cannot be named
+ *   without a reference to '.pnpm/@deepseek-ai+schemastery@3.18.5/...'. This is likely
+ *   not portable. A type annotation is necessary.
+ *
+ * 注意这个错**只在干净安装上出现**：本机 `build.sh` 会在 `node_modules/` 里建 junction
+ * 指向本地 dsh checkout，类型解析到稳定路径，于是本地 `pnpm build` 侥幸通过（见 AGENTS.md §2）。
+ * 显式标注后 `.d.ts` 里只剩包名 `@deepseek-ai/schemastery`，与官方插件的
+ * `export declare const Config: Schema<X>` 写法一致。
+ */
+export interface PluginConfig {
+  loopGuard: boolean
+  loopField: string
+  loopMinCycles: number
+  loopMinRepeats: number
+  loopMinConfidence: number
+  loopMinHits: number
+  loopCooldownMs: number
+  loopMaxTransfers: number
+  loopDescendants: string
+}
+
 /** Cordis config schema：由 profile 的 entry 配置或设置页表单填充。 */
-export const Config = z.object({
+export const Config: z<PluginConfig> = z.object({
   loopGuard: volatile(
     z
       .boolean()

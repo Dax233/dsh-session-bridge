@@ -151,7 +151,7 @@ pnpm update '@deepseek-ai/dsh-agent' '@deepseek-ai/dsh-agent-preset-registry' \
 pnpm typecheck      # src/ 对锁文件里的新 DSH 类型
 pnpm check:compat   # 已安装 harness 的 .d.ts + 产物内联版本来源校验
 pnpm test           # wait/卡住、archived handler、V3→V4 迁移、peer 下限守卫
-pnpm build          # 产物 lib/index.js 内联新 DSH
+pnpm build          # 产物 lib/index.js 内联新 DSH（发版前另用干净目录复现一次，见坑 3）
 pnpm smoke          # 产物真的能挂载并注册 15 个工具
 ```
 
@@ -166,6 +166,32 @@ pnpm smoke          # 产物真的能挂载并注册 15 个工具
 `">=0.2.0-rc.1"` 直接写成 `"0.2.0-rc.2"`，`pnpm test` 的守卫随即报
 `must be a floor-only range`。所以每次 `pnpm update` 之后**必须 `git diff package.json` 复核**，
 把 dev 范围改回 `>=` 形式（本仓库 0.7.0 已踩过一次）。
+
+**坑 3：本机 `pnpm build` 通过 ≠ CI 通过（`build.sh` 的 junction 会掩盖 TS2742）。**
+`build.sh` 会在 `node_modules/` 里建 junction 指向本地 dsh checkout（例如
+`node_modules/schemastery` → `D:\code\deepseek-harness\vendor\schemastery`），类型解析因此落到
+**稳定路径**；而 CI 是**干净安装**，同一份代码会解析到 pnpm 虚拟 store 的深路径。0.7.0 就栽在这里：
+`src/config.ts` 导出的 `Config` 类型是推导出来的，干净安装下 `tsc --emitDeclarationOnly` 直接报
+
+```
+src/config.ts(34,14): error TS2742: The inferred type of 'Config' cannot be named without a
+reference to '.pnpm/@deepseek-ai+schemastery@3.18.5/node_modules/@deepseek-ai/schemastery'.
+This is likely not portable. A type annotation is necessary.
+```
+
+本机 `pnpm build` 全绿，tag 推上去之后 CI 的 Build 步骤才红、`Publish to npm` 被跳过——**版本号已经
+被 tag 占掉，但 npm 上什么都没有**。两条规则：
+
+- **导出的 schema 必须显式命名类型**：`export const Config: z<PluginConfig> = z.object({ ... })`
+  （官方插件的 `.d.ts` 就是 `export declare const Config: Schema<X>`）。这样产物 `.d.ts` 里只剩
+  包名 `@deepseek-ai/schemastery`，不含任何 `.pnpm/...` 深路径。
+- **发版前用干净目录复现一次 CI 的 build**（本机 junction 是唯一的差异来源）：
+
+```powershell
+git archive -o "$env:TEMP\head.zip" HEAD
+Expand-Archive "$env:TEMP\head.zip" "$env:TEMP\ci-check" -Force
+cd "$env:TEMP\ci-check"; pnpm install --frozen-lockfile; pnpm build
+```
 
 然后更新 `README.zh.md` / `README.md` 的「实测于 x.y.z」与 `CHANGELOG.md`，必要时发新版本。
 
