@@ -21,7 +21,9 @@ the original copyright notice has been retained there.
    tools register (`session_search_global`, `session_bridge_find`,
    `session_bridge_read`, `session_bridge_segments`, `session_bridge_status`);
    create/send/wait/resume/cancel/monitor/archive tools are not exposed.
-   This fork's bundle row sets `readOnlyTools: true` by default.
+   This checkout's bundle row sets `readOnlyTools: false` (all tools); set it to
+   `true` to expose only the read-only subset. The value is read when the row is
+   (re)loaded, so changing it needs a full DSH restart.
 3. Updated package metadata, `dsh.plugin.json`, READMEs, and this NOTICE for the
    fork. The upstream tool behavior is otherwise unchanged.
 4. Enabled the host full-text index from this bundle's patch layer: the

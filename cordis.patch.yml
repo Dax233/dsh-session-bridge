@@ -1,15 +1,17 @@
 - insert:
     - id: dsh-session-bridge
       name: '@local/dsh-session-bridge'
-      # 本 fork 默认只注册只读工具；需要创建/发送/监控/归档时改为 false 并重载该插件行。
+      # 当前开放全部工具（含 create/send/wait/resume/cancel/monitor/archive）。
+      # 只想给 agent 只读能力时置 true；该配置在插件行装载时读取，改完需完整重启 DSH。
       config:
-        readOnlyTools: true
+        readOnlyTools: false
 
 # 开启根 sessionQuery 的全文索引。
 # 上游文档写明：基础组合把 `session-query-sqlite` 设为 `openAt: never`，
 # 需要内容检索的部署在后续 patch 层覆盖 `openAt`（profile patch 或 bundle patch）。
 # 本 fork 的 `session_search_global` 消费根服务，所以由本 bundle 一并开启：
 # 首次搜索时才建索引（openAt: first-search），索引落盘在 DSH_HOME 下，删除后自动重建。
+# 注意：修改本行属于核心服务配置，只能完整重启 DSH 生效，禁止热切换 bundle。
 - id: session-query-sqlite
   config:
     path: !!js dshHomePath('session-search.db')

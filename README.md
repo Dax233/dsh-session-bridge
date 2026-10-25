@@ -3,8 +3,9 @@
 > **Fork notice.** This is a modified fork of
 > [heartmove/dsh-session-bridge](https://github.com/heartmove/dsh-session-bridge)
 > (MIT, forked from commit `4a20e32`). It adds cross-workspace full-text search
-> (`session_search_global`) and a `readOnlyTools` switch; this fork's bundle row
-> registers only read-only tools by default. See [NOTICE](./NOTICE) for the
+> (`session_search_global`) and a `readOnlyTools` switch; this checkout's bundle
+> row leaves it off, so all tools register (set `readOnlyTools: true` to expose
+> only the read-only subset). See [NOTICE](./NOTICE) for the
 > provenance and the exact change list, and [LICENSE](./LICENSE) for the MIT text.
 >
 > Install from GitHub (or `link:/absolute/path/to/dsh-session-bridge` for a
@@ -263,7 +264,7 @@ A single watchdog can still opt out on its own:
 
 | Plugin config field | Default | Meaning |
 |---|---|---|
-| `readOnlyTools` | `false` (this fork's bundle: `true`) | Register only read-only tools: `session_search_global`, `session_bridge_find`, `session_bridge_read`, `session_bridge_segments`, `session_bridge_status`. `false` also exposes create/send/wait/resume/cancel/monitor/archive. Takes effect when the plugin row is (re)loaded. |
+| `readOnlyTools` | `false` (this checkout: `false`) | Register only read-only tools: `session_search_global`, `session_bridge_find`, `session_bridge_read`, `session_bridge_segments`, `session_bridge_status`. `false` also exposes create/send/wait/resume/cancel/monitor/archive. Takes effect when the plugin row is (re)loaded, i.e. after a full DSH restart. |
 | `loopGuard` | `true` | **Master switch**: `false` stops loop detection for every watchdog (this is what the settings page / `/cot-loop` toggles) |
 | `loopField` | `reasoning` | What to scan: `reasoning` / `text` / `both` |
 | `loopMinCycles` | `2` | Minimum repeated cycles |

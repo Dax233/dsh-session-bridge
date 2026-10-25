@@ -12,9 +12,10 @@
   删除 DB 文件即可重建。**修改该行必须完整重启 DSH**：热切换触碰核心
   `sessionQuery` 服务的 bundle 可能卡在卸载阶段（开发中实测一次，完整重启恢复，
   配置与代码无损）。侧边栏内容搜索也随之可用。
-- **新增 `readOnlyTools` 配置（默认 `false`，本 fork 的 bundle 行置 `true`）。**
-  只注册 `session_search_global` / `find` / `read` / `segments` / `status`；
+- **新增 `readOnlyTools` 配置（默认 `false`）。**
+  开启时只注册 `session_search_global` / `find` / `read` / `segments` / `status`；
   create/send/wait/resume/cancel/monitor/archive 不注册。上游工具行为保持原样。
+  当前 bundle 行取 `false`（注册全部工具）；改为 `true` 即回到只读工具面，改完需完整重启。
 - **许可证补齐。** 上游仓库声明 MIT 但未附带 LICENSE 文件；本 fork 增加
   [LICENSE](./LICENSE)（保留 heartmove 版权 + 标注 Dax233 修改）与
   [NOTICE](./NOTICE)（出处、基线提交、改动清单）。

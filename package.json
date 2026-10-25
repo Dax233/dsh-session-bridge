@@ -1,7 +1,7 @@
 {
   "name": "@local/dsh-session-bridge",
   "version": "0.8.0",
-  "description": "会话桥 fork（dsh-session-bridge + 跨工作区正文检索）：保留上游的跨工作区查找/读取会话能力，新增 session_search_global 全文检索工具与 readOnlyTools 只读开关；本 fork 的 bundle 行默认只注册只读工具。",
+  "description": "会话桥 fork（dsh-session-bridge + 跨工作区正文检索）：保留上游的跨工作区查找/读取会话能力，新增 session_search_global 全文检索工具与 readOnlyTools 只读开关；当前默认注册全部工具。",
   "private": false,
   "type": "module",
   "main": "./lib/index.js",

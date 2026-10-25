@@ -2,7 +2,8 @@
 
 > **Fork 说明。** 本仓库是 [heartmove/dsh-session-bridge](https://github.com/heartmove/dsh-session-bridge)
 > 的修改版（MIT，fork 自提交 `4a20e32`）。新增跨工作区正文检索工具 `session_search_global`
-> 与 `readOnlyTools` 只读开关；本 fork 的 bundle 行默认只注册只读工具。
+> 与 `readOnlyTools` 只读开关；当前 bundle 行未开启只读模式（注册全部工具），
+> 把 `readOnlyTools` 置 `true` 可只保留只读工具子集。
 > 出处与完整改动清单见 [NOTICE](./NOTICE)，MIT 全文见 [LICENSE](./LICENSE)。
 >
 > 从 GitHub 安装（本地检出用 `link:/绝对路径/dsh-session-bridge`）：
