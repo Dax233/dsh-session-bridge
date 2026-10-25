@@ -4,3 +4,13 @@
       # 本 fork 默认只注册只读工具；需要创建/发送/监控/归档时改为 false 并重载该插件行。
       config:
         readOnlyTools: true
+
+# 开启根 sessionQuery 的全文索引。
+# 上游文档写明：基础组合把 `session-query-sqlite` 设为 `openAt: never`，
+# 需要内容检索的部署在后续 patch 层覆盖 `openAt`（profile patch 或 bundle patch）。
+# 本 fork 的 `session_search_global` 消费根服务，所以由本 bundle 一并开启：
+# 首次搜索时才建索引（openAt: first-search），索引落盘在 DSH_HOME 下，删除后自动重建。
+- id: session-query-sqlite
+  config:
+    path: !!js dshHomePath('session-search.db')
+    openAt: first-search

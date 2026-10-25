@@ -1,3 +1,27 @@
+# 0.8.0 (fork)
+
+> 本版本是 [heartmove/dsh-session-bridge](https://github.com/heartmove/dsh-session-bridge)
+> 的修改分支（MIT，fork 自 `4a20e32`），不是上游发布。改动清单见 [NOTICE](./NOTICE)。
+
+- **新增 `session_search_global`（跨工作区全文检索）。** 直接消费宿主 `ctx.sessionQuery`：
+  有索引时走 `searchSessions` / `searchEvents`；索引关闭时降级为
+  `listSessions()` + `filterEvents()` 有界扫描（≤250 会话、4 并发，结果标记
+  `degraded: true`）。每个会话返回一条最强命中，传 `sessionId` 则返回单会话命中事件。
+- **bundle patch 开启根全文索引。** 把 `session-query-sqlite` 覆盖为
+  `path: !!js dshHomePath('session-search.db')` + `openAt: first-search`；
+  删除 DB 文件即可重建。**修改该行必须完整重启 DSH**：热切换触碰核心
+  `sessionQuery` 服务的 bundle 可能卡在卸载阶段（开发中实测一次，完整重启恢复，
+  配置与代码无损）。侧边栏内容搜索也随之可用。
+- **新增 `readOnlyTools` 配置（默认 `false`，本 fork 的 bundle 行置 `true`）。**
+  只注册 `session_search_global` / `find` / `read` / `segments` / `status`；
+  create/send/wait/resume/cancel/monitor/archive 不注册。上游工具行为保持原样。
+- **许可证补齐。** 上游仓库声明 MIT 但未附带 LICENSE 文件；本 fork 增加
+  [LICENSE](./LICENSE)（保留 heartmove 版权 + 标注 Dax233 修改）与
+  [NOTICE](./NOTICE)（出处、基线提交、改动清单）。
+- **测试。** 新增 `scripts/test-search.mjs`（索引态 / 单会话 / 降级扫描 / 错误路径）；
+  `scripts/test-tools-archived.mjs` 增加只读工具面断言；`smoke-bundle` 期望 16 个工具。
+  `pnpm test`、`pnpm smoke` 全绿。
+
 # 0.7.0
 
 > 0.6.0 从未发布到 npm（registry 上最高是 0.5.2），所以它下面的改动与本节一起，作为 **0.7.0** 交付。

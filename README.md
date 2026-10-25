@@ -6,11 +6,21 @@
 > (`session_search_global`) and a `readOnlyTools` switch; this fork's bundle row
 > registers only read-only tools by default. See [NOTICE](./NOTICE) for the
 > provenance and the exact change list, and [LICENSE](./LICENSE) for the MIT text.
-> Install this fork from a local checkout:
+>
+> Install from GitHub (or `link:/absolute/path/to/dsh-session-bridge` for a
+> local checkout):
 >
 > ```bash
-> dsh plugin --profile <p> add link:/absolute/path/to/dsh-session-bridge
+> dsh plugin --profile <p> add github:Dax233/dsh-session-bridge
 > ```
+>
+> **Full-text index (fork):** this bundle's patch also enables the host
+> `session-query-sqlite` row (`path: dshHomePath('session-search.db')`,
+> `openAt: first-search`), so `session_search_global` uses the index instead of
+> the bounded fallback scan. The index rebuilds when the DB file is deleted.
+> **Changing this row requires a full DSH restart**: hot-toggling a bundle whose
+> patch touches the core `sessionQuery` service can stall the host in the unload
+> phase (observed once; the recovery was a full restart, no config damage).
 
 Targets DSH **0.1.7-0 and later**: both the peer ranges and `package.json`'s
 `engines.dsh` declare a floor only (`>=0.1.7-0`), never a ceiling. Since DSH

@@ -24,6 +24,14 @@ the original copyright notice has been retained there.
    This fork's bundle row sets `readOnlyTools: true` by default.
 3. Updated package metadata, `dsh.plugin.json`, READMEs, and this NOTICE for the
    fork. The upstream tool behavior is otherwise unchanged.
+4. Enabled the host full-text index from this bundle's patch layer: the
+   `session-query-sqlite` row now uses `path: dshHomePath('session-search.db')`
+   and `openAt: first-search` (upstream documents this override for deployments
+   that want content search). This makes `session_search_global` index-backed;
+   the DB rebuilds when deleted. Changing this row requires a full DSH restart —
+   hot-toggling a bundle whose patch touches the core `sessionQuery` service can
+   stall the host during unload (one such incident happened during development;
+   a full restart recovered it with no config or code damage).
 
 No upstream trademark is claimed. The upstream project remains the work of its
 own authors; please report fork-specific issues to the fork, not upstream.

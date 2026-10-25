@@ -4,7 +4,15 @@
 > 的修改版（MIT，fork 自提交 `4a20e32`）。新增跨工作区正文检索工具 `session_search_global`
 > 与 `readOnlyTools` 只读开关；本 fork 的 bundle 行默认只注册只读工具。
 > 出处与完整改动清单见 [NOTICE](./NOTICE)，MIT 全文见 [LICENSE](./LICENSE)。
-> 本地安装：`dsh plugin --profile <p> add link:/绝对路径/dsh-session-bridge`。
+>
+> 从 GitHub 安装（本地检出用 `link:/绝对路径/dsh-session-bridge`）：
+> `dsh plugin --profile <p> add github:Dax233/dsh-session-bridge`。
+>
+> **全文索引（fork）：** 本 bundle 的 patch 同时把宿主的 `session-query-sqlite` 行
+> 改为 `path: dshHomePath('session-search.db')` + `openAt: first-search`，因此
+> `session_search_global` 走索引而不是有界降级扫描；删除该 DB 文件后会自动重建。
+> **修改这一行必须完整重启 DSH**：热切换「patch 触碰核心 `sessionQuery` 服务」的 bundle，
+> 可能让宿主卡在卸载阶段（实测出现过一次，恢复方式是完整重启，配置与代码均无损）。
 
 适配 DSH **0.1.7-0 及之后的版本**：`peerDependencies` 与 `package.json` 的 `engines.dsh` 都只声明
 下限（`>=0.1.7-0`），不设上限。**DSH `0.2.1-rc.1` 起 `engines.dsh` 单独裁决**（声明了就忽略
