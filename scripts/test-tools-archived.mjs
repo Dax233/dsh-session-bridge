@@ -17,7 +17,7 @@ import assert from 'node:assert/strict'
 import { registerBridgeTools } from '../src/tools.ts'
 
 /** Capture every tool the plugin registers. */
-function captureTools() {
+function captureTools(extra = {}) {
   const tools = new Map()
   const ctx = {
     tools: { register: (tool) => { tools.set(tool.name, tool) } },
@@ -57,7 +57,7 @@ function captureTools() {
   }
   const registry = { all: async () => [], record() {}, touch() {}, load: async () => {}, persist: async () => {} }
   const monitor = { dispose() {}, start() {}, stop: () => false, list: () => [] }
-  registerBridgeTools({ ctx, registry, monitor })
+  registerBridgeTools({ ctx, registry, monitor, ...extra })
   return tools
 }
 
@@ -82,7 +82,19 @@ await test('registerBridgeTools registers the archived tool', () => {
   assert.ok(tools.has('session_bridge_archived'))
   assert.ok(tools.has('session_bridge_archive'))
   assert.ok(tools.has('session_bridge_unarchive'))
-  assert.equal(tools.size, 15)
+  assert.ok(tools.has('session_search_global'))
+  assert.equal(tools.size, 16)
+})
+
+await test('readOnly mode registers only query tools', () => {
+  const queryOnly = captureTools({ readOnly: true })
+  assert.deepEqual([...queryOnly.keys()].sort(), [
+    'session_bridge_find',
+    'session_bridge_read',
+    'session_bridge_segments',
+    'session_bridge_status',
+    'session_search_global',
+  ])
 })
 
 /**

@@ -1,0 +1,29 @@
+# NOTICE — fork provenance and modifications
+
+This package is a modified fork of **dsh-session-bridge** by **heartmove**:
+
+- Upstream: https://github.com/heartmove/dsh-session-bridge
+- Forked from commit: `4a20e3219fa8d500306f6f3a34f9dfaf7db90a07` (version 0.7.0, 2026-10-17)
+- License: MIT (declared in the upstream `package.json` and `README.md`)
+
+The upstream repository at that commit did not ship a `LICENSE` file. Its MIT
+declaration in `package.json` ("license": "MIT") and its README's "License"
+section are the basis for this fork's MIT license; the copyright holder is the
+upstream author (heartmove). The full MIT text is in [LICENSE](./LICENSE), and
+the original copyright notice has been retained there.
+
+## Modifications in this fork
+
+1. Added `src/search.ts` and the `session_search_global` tool: full-text search
+   over the host `sessionQuery` corpus across **all workspaces**, with a bounded
+   fallback scan when the optional full-text index is closed.
+2. Added the `readOnlyTools` plugin config field. When true, only read-only
+   tools register (`session_search_global`, `session_bridge_find`,
+   `session_bridge_read`, `session_bridge_segments`, `session_bridge_status`);
+   create/send/wait/resume/cancel/monitor/archive tools are not exposed.
+   This fork's bundle row sets `readOnlyTools: true` by default.
+3. Updated package metadata, `dsh.plugin.json`, READMEs, and this NOTICE for the
+   fork. The upstream tool behavior is otherwise unchanged.
+
+No upstream trademark is claimed. The upstream project remains the work of its
+own authors; please report fork-specific issues to the fork, not upstream.

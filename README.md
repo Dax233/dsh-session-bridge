@@ -1,5 +1,17 @@
 # dsh-session-bridge — 会话桥 (Session bridge)
 
+> **Fork notice.** This is a modified fork of
+> [heartmove/dsh-session-bridge](https://github.com/heartmove/dsh-session-bridge)
+> (MIT, forked from commit `4a20e32`). It adds cross-workspace full-text search
+> (`session_search_global`) and a `readOnlyTools` switch; this fork's bundle row
+> registers only read-only tools by default. See [NOTICE](./NOTICE) for the
+> provenance and the exact change list, and [LICENSE](./LICENSE) for the MIT text.
+> Install this fork from a local checkout:
+>
+> ```bash
+> dsh plugin --profile <p> add link:/absolute/path/to/dsh-session-bridge
+> ```
+
 Targets DSH **0.1.7-0 and later**: both the peer ranges and `package.json`'s
 `engines.dsh` declare a floor only (`>=0.1.7-0`), never a ceiling. Since DSH
 **0.2.1-rc.1** `engines.dsh` decides alone (when present, `peerDependencies` are
@@ -46,6 +58,13 @@ action does.
 - **Read any session.** `session_bridge_read` folds a session's event log into
   readable rows — live or offline (from persistence) — with `sinceSeq` paging,
   role filtering, and a `limit` (default 20, max 100).
+- **Search the full text of every workspace.** `session_search_global` (fork
+  addition) queries the host `sessionQuery` corpus directly, which has no
+  caller-workspace restriction, so it can find a decision or an interface
+  contract recorded in another project's session. It returns the strongest
+  match per session with a snippet, or the matching events of one session when
+  `sessionId` is given. When a profile has no open full-text index it degrades
+  to a bounded log scan and reports `degraded: true`.
 - **Read output paragraph by paragraph.** `session_bridge_segments` returns the
   session's **completed output segments** — every finished assistant step (one
   `assistant/message`: its text, reasoning, and requested tool calls) as its own
@@ -234,6 +253,7 @@ A single watchdog can still opt out on its own:
 
 | Plugin config field | Default | Meaning |
 |---|---|---|
+| `readOnlyTools` | `false` (this fork's bundle: `true`) | Register only read-only tools: `session_search_global`, `session_bridge_find`, `session_bridge_read`, `session_bridge_segments`, `session_bridge_status`. `false` also exposes create/send/wait/resume/cancel/monitor/archive. Takes effect when the plugin row is (re)loaded. |
 | `loopGuard` | `true` | **Master switch**: `false` stops loop detection for every watchdog (this is what the settings page / `/cot-loop` toggles) |
 | `loopField` | `reasoning` | What to scan: `reasoning` / `text` / `both` |
 | `loopMinCycles` | `2` | Minimum repeated cycles |
@@ -403,6 +423,7 @@ registration and junction; not re-assembled on restart).
 
 | Tool | What it does |
 |---|---|
+| `session_search_global` | **Fork addition.** Full-text search across every session in every workspace: one strongest match per session (id/title/cwd/live/snippet), or the matching events of one session when `sessionId` is passed. Read-only. |
 | `session_bridge_create` | Create a main session (current or another workspace via `workspaceId` / `cwd`); optional first prompt + `waitForReply`; async creates return a `sinceSeq` anchor. |
 | `session_bridge_send` | Send a message (`mode=queue`/`steer`); optional wait-for-reply; async sends return a `sinceSeq` anchor. |
 | `session_bridge_wait` | Wait for new output after `sinceSeq` (default: latest seq at call time; `-1` counts existing events): `waitFor=reply` (text) or `waitFor=segment` (any completed step, no full-turn wait); optional `requireTurnEnd`; falls back to the pre-existing reply with `stale` when nothing new arrives. |
@@ -460,4 +481,8 @@ one back with `session_bridge_resume`. Monitor watchdogs also stop on unload.
 
 ## License
 
-MIT
+MIT. Upstream © heartmove ([heartmove/dsh-session-bridge](https://github.com/heartmove/dsh-session-bridge));
+fork modifications © Dax233. The upstream project declared MIT in its
+`package.json`/README but shipped no `LICENSE` file at the forked commit; the
+full MIT text with both notices is in [LICENSE](./LICENSE), and the change list
+is in [NOTICE](./NOTICE).

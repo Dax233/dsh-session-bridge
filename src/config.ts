@@ -46,6 +46,7 @@ function volatile<T>(schema: T): T {
  * `export declare const Config: Schema<X>` 写法一致。
  */
 export interface PluginConfig {
+  readOnlyTools: boolean
   loopGuard: boolean
   loopField: string
   loopMinCycles: number
@@ -59,6 +60,12 @@ export interface PluginConfig {
 
 /** Cordis config schema：由 profile 的 entry 配置或设置页表单填充。 */
 export const Config: z<PluginConfig> = z.object({
+  readOnlyTools: volatile(
+    z
+      .boolean()
+      .default(false)
+      .description('只注册只读工具（search/find/read/segments/status）：不注册 create/send/wait/resume/cancel/monitor/archive。默认 false 保持原行为；本 fork 的 bundle 行默认开启。'),
+  ),
   loopGuard: volatile(
     z
       .boolean()

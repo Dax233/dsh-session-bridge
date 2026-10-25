@@ -1,18 +1,18 @@
 {
-  "name": "dsh-session-bridge",
-  "version": "0.7.0",
-  "description": "会话桥（dsh-session-bridge）：通过提示词创建新的主会话（顶层 UI 会话）、向任意会话发送消息、等待会话的下一条回复、读取会话消息，并按会话名或 id 跨工作区查找会话；此外支持监控/调度主任务（含思维链循环检测 → 自动中断并把任务转移到新会话）、子代理处置与归档/取消归档会话。",
+  "name": "@local/dsh-session-bridge",
+  "version": "0.8.0",
+  "description": "会话桥 fork（dsh-session-bridge + 跨工作区正文检索）：保留上游的跨工作区查找/读取会话能力，新增 session_search_global 全文检索工具与 readOnlyTools 只读开关；本 fork 的 bundle 行默认只注册只读工具。",
   "private": false,
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/types/index.d.ts",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/heartmove/dsh-session-bridge.git"
+    "url": "git+https://github.com/Dax233/dsh-session-bridge.git"
   },
-  "homepage": "https://github.com/heartmove/dsh-session-bridge#readme",
+  "homepage": "https://github.com/Dax233/dsh-session-bridge#readme",
   "bugs": {
-    "url": "https://github.com/heartmove/dsh-session-bridge/issues"
+    "url": "https://github.com/Dax233/dsh-session-bridge/issues"
   },
   "keywords": [
     "dsh",
@@ -20,7 +20,9 @@
     "plugin",
     "session",
     "session-bridge",
-    "bridge"
+    "bridge",
+    "session-search",
+    "cross-workspace"
   ],
   "publishConfig": {
     "access": "public"
@@ -47,14 +49,16 @@
     "README.md",
     "README.zh.md",
     "CHANGELOG.md",
-    "AGENTS.md"
+    "AGENTS.md",
+    "LICENSE",
+    "NOTICE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit false --declaration --emitDeclarationOnly --outDir lib/types && tsdown",
     "build:client": "tsdown",
     "check:compat": "node scripts/check-dsh-compat.mjs",
     "smoke": "node scripts/smoke-bundle.mjs",
-    "test": "node scripts/test-peer-floor.mjs && node --experimental-strip-types scripts/test-bridge-core.mjs && node --experimental-strip-types scripts/test-loop-guard.mjs && node --experimental-strip-types scripts/test-handoff.mjs && node --experimental-strip-types scripts/test-monitor-loop.mjs && node --experimental-strip-types scripts/test-tools-create.mjs && node --experimental-strip-types scripts/test-config.mjs && node --experimental-strip-types scripts/test-tools-archived.mjs && node --experimental-strip-types --test scripts/test-v4.mjs",
+    "test": "node scripts/test-peer-floor.mjs && node --experimental-strip-types scripts/test-bridge-core.mjs && node --experimental-strip-types scripts/test-search.mjs && node --experimental-strip-types scripts/test-loop-guard.mjs && node --experimental-strip-types scripts/test-handoff.mjs && node --experimental-strip-types scripts/test-monitor-loop.mjs && node --experimental-strip-types scripts/test-tools-create.mjs && node --experimental-strip-types scripts/test-config.mjs && node --experimental-strip-types scripts/test-tools-archived.mjs && node --experimental-strip-types --test scripts/test-v4.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepare": "tsdown"
   },

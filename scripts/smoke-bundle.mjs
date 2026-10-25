@@ -54,6 +54,7 @@ mod.apply(ctx)
 await new Promise((done) => setTimeout(done, 50))
 
 const expected = [
+  'session_search_global',
   'session_bridge_create', 'session_bridge_send', 'session_bridge_resume', 'session_bridge_wait',
   'session_bridge_segments', 'session_bridge_read', 'session_bridge_find', 'session_bridge_status',
   'session_bridge_cancel', 'session_bridge_monitor_start', 'session_bridge_monitor_stop',

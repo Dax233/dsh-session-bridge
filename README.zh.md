@@ -1,5 +1,11 @@
 # dsh-session-bridge — 会话桥（Session bridge）
 
+> **Fork 说明。** 本仓库是 [heartmove/dsh-session-bridge](https://github.com/heartmove/dsh-session-bridge)
+> 的修改版（MIT，fork 自提交 `4a20e32`）。新增跨工作区正文检索工具 `session_search_global`
+> 与 `readOnlyTools` 只读开关；本 fork 的 bundle 行默认只注册只读工具。
+> 出处与完整改动清单见 [NOTICE](./NOTICE)，MIT 全文见 [LICENSE](./LICENSE)。
+> 本地安装：`dsh plugin --profile <p> add link:/绝对路径/dsh-session-bridge`。
+
 适配 DSH **0.1.7-0 及之后的版本**：`peerDependencies` 与 `package.json` 的 `engines.dsh` 都只声明
 下限（`>=0.1.7-0`），不设上限。**DSH `0.2.1-rc.1` 起 `engines.dsh` 单独裁决**（声明了就忽略
 `peerDependencies`），所以两者逐字一致，当前实测于 **0.2.1-rc.1**。详见[兼容性变更](CHANGELOG.md)与
@@ -14,6 +20,11 @@
 
 ## 功能
 
+- **跨工作区全文检索会话正文。**（本 fork 新增）`session_search_global` 直接查询宿主的
+  `sessionQuery` 语料——该服务没有调用者工作区限制——因此可以找回写在其它项目会话里的
+  决策与接口协议。默认每个会话返回一条最强命中（含 id / 标题 / cwd / live / 摘要）；
+  传 `sessionId` 则返回该会话内的命中事件。索引未开启时降级为有界日志扫描，结果标记
+  `degraded: true`。
 - **创建真实 DSH 会话。** `session_bridge_create` 在当前工作区创建新的主会话（顶层 UI 会话），
   传 `workspaceId` / `cwd` 则跨工作区；可选发送首条 prompt 并阻塞等待首条回复。provider / model /
   reasoning effort 默认继承调用会话。异步创建（不带 `waitForReply`）会返回 `sinceSeq` 锚点，
@@ -328,6 +339,7 @@ dev_inject_plugin D:\code\dsh-session-bridge
 
 | 工具 | 作用 |
 |---|---|
+| `session_search_global` | **本 fork 新增。** 跨所有工作区全文检索会话正文：每个会话一条最强命中（id/标题/cwd/live/摘要）；传 `sessionId` 时返回单会话内的命中事件。只读。 |
 | `session_bridge_create` | 创建主会话（当前或其它工作区，经 `workspaceId` / `cwd`）；可选首条 prompt + `waitForReply`；异步时返回 `sinceSeq` 锚点。 |
 | `session_bridge_send` | 发消息（`mode=queue`/`steer`）；可选等待回复；异步时返回 `sinceSeq` 锚点。 |
 | `session_bridge_wait` | 等待 `sinceSeq` 之后新输出（默认 = 调用时刻最新 seq，`-1` = 从头发算）：`waitFor=reply`（文本）或 `waitFor=segment`（任一已完成步骤即返回，无需等整个 turn）；可选 `requireTurnEnd`；零新输出时回落既有回复并置 `stale`。 |
@@ -382,4 +394,6 @@ DSH ≥ 0.1.6 支持**运行时挂载/卸载**插件（设置 → 插件页开�
 
 ## License
 
-MIT
+MIT。上游 © heartmove（[heartmove/dsh-session-bridge](https://github.com/heartmove/dsh-session-bridge)）；
+fork 修改 © Dax233。上游在被 fork 的提交上于 `package.json` / README 声明了 MIT，但未随仓库附带
+`LICENSE` 文件；包含双方声明的 MIT 全文见 [LICENSE](./LICENSE)，改动清单一见 [NOTICE](./NOTICE)。

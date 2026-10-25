@@ -35,6 +35,7 @@ import { createBridgeSession, type BridgeSessionCaller } from './session-create.
 import type { BridgeRegistry } from './registry.ts'
 import type { SessionMonitor, MonitorConfig, MonitorEntryState, CoTRule } from './monitor.ts'
 import type { LoopPolicy } from './config.ts'
+import { registerSearchTool } from './search.ts'
 
 type SessionIdBrand = { readonly __sessionIdBrand?: never }
 
@@ -44,6 +45,8 @@ export interface BridgeEnv {
   monitor: SessionMonitor
   /** 插件级循环策略（总开关 + 全局默认值）：渲染与默认值都读它。 */
   policy: LoopPolicy
+  /** 只读模式：只注册查询类工具，不注册创建/发送/监控/归档等写操作。 */
+  readOnly: boolean
 }
 
 function asJson(value: unknown): Record<string, JsonValue> {
@@ -723,14 +726,17 @@ function registerFind(env: BridgeEnv): void {
 }
 
 export function registerBridgeTools(env: BridgeEnv): void {
-  registerCreate(env)
-  registerSend(env)
-  registerResume(env)
-  registerWait(env)
+  // 查询类工具始终注册；session_search_global 是本 fork 新增的跨工作区正文检索。
+  registerSearchTool(env.ctx)
   registerSegments(env)
   registerRead(env)
   registerFind(env)
   registerStatus(env)
+  if (env.readOnly) return
+  registerCreate(env)
+  registerSend(env)
+  registerResume(env)
+  registerWait(env)
   registerCancel(env)
   registerMonitor(env)
   registerArchive(env)

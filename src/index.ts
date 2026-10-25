@@ -10,7 +10,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { BridgeRegistry } from './registry.ts'
 import { SessionMonitor } from './monitor.ts'
 import { registerBridgeTools, type BridgeEnv } from './tools.ts'
-import { Config, createLoopPolicy } from './config.ts'
+import { Config, createLoopPolicy, readValue } from './config.ts'
 import { createConfigWriter, registerLoopCommands } from './commands.ts'
 
 /** 插件配置：思维链循环自动中断的开关与全局默认值（设置页表单与 /cot-loop 共用同一份）。 */
@@ -31,9 +31,12 @@ export function apply(ctx: Context, config?: unknown): void {
   // 循环策略：总开关与全局默认值都从 Config 的 volatile 引用实时读取，
   // 所以设置页/命令改开关后，运行中的守护下一个 tick 就按新值走（无需重启或重载）。
   const policy = createLoopPolicy(config)
+  // 只读模式：只注册查询类工具（search/find/read/segments/status）。本 fork 的
+  // bundle 行默认开启；配置项变更后由 Loader 重载本行生效。
+  const readOnly = readValue<boolean>((config as Record<string, unknown> | undefined)?.readOnlyTools) === true
   // 监控循环会把任务转移到新会话，需要 registry 做桥侧登记（与工具共用同一条创建路径）。
   const monitor = new SessionMonitor(ctx, registry, undefined, policy)
-  const env: BridgeEnv = { ctx, registry, monitor, policy }
+  const env: BridgeEnv = { ctx, registry, monitor, policy, readOnly }
   registerBridgeTools(env)
   // 斜杠命令 /cot-loop：与设置页共用同一份配置；commands 服务缺失时静默跳过。
   registerLoopCommands(ctx, { policy, writeConfig: createConfigWriter(ctx) })
