@@ -41,8 +41,8 @@ const titles = async (ids) => ids.map((id) => ({ sessionId: id, status: 'fulfill
       requests.push(request)
       return {
         items: [
-          { ...record('session-other', 'F:\\github\\memory_research', false), bestMatch: { seq: 4, type: 'user/message', surface: 'current', time: 200, snippet: 'interface contract' } },
-          { ...record('session-self', 'F:\\github\\dsh-plugins', true), bestMatch: { seq: 9, type: 'assistant/message', surface: 'current', time: 300, snippet: 'something else' } },
+          { ...record('session-other', '/work/memory_research', false), bestMatch: { seq: 4, type: 'user/message', surface: 'current', time: 200, snippet: 'interface contract' } },
+          { ...record('session-self', '/work/dsh-plugins', true), bestMatch: { seq: 9, type: 'assistant/message', surface: 'current', time: 300, snippet: 'something else' } },
         ],
         nextCursor: 'next',
       }
@@ -70,13 +70,13 @@ const titles = async (ids) => ids.map((id) => ({ sessionId: id, status: 'fulfill
     async searchEvents(request) {
       assert.deepEqual(request, { sessionId: 'session-a', query: 'protocol', limit: 5 })
       return {
-        session: { id: 'session-a', cwd: 'F:\\github\\memory_research', createdAt: 1 },
+        session: { id: 'session-a', cwd: '/work/memory_research', createdAt: 1 },
         items: [{ sessionId: 'session-a', seq: 7, type: 'tool/result', surface: 'current', time: 10, snippet: 'protocol v2' }],
       }
     },
     async filterSessions(filters) {
       assert.deepEqual(filters, [{ kind: 'id', values: ['session-a'] }])
-      return [{ ...record('session-a', 'F:\\github\\memory_research', true) }]
+      return [{ ...record('session-a', '/work/memory_research', true) }]
     },
     readTitleSnapshots: titles,
   })
@@ -96,9 +96,9 @@ const titles = async (ids) => ids.map((id) => ({ sessionId: id, status: 'fulfill
     },
     async listSessions() {
       return [
-        record('session-b', 'F:\\github\\temp', false),
-        record('session-c', 'F:\\github\\dsh-plugins', true),
-        record('session-d', 'F:\\github\\memory_research', false),
+        record('session-b', '/work/temp', false),
+        record('session-c', '/work/dsh-plugins', true),
+        record('session-d', '/work/memory_research', false),
       ]
     },
     async filterEvents(sessionId, filters) {
@@ -133,3 +133,5 @@ const titles = async (ids) => ids.map((id) => ({ sessionId: id, status: 'fulfill
 }
 
 console.log('\ntest-search: ' + String(passed) + ' checks passed')
+
+
