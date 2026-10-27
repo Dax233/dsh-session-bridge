@@ -104,3 +104,16 @@
 - 修复 Windows 下 pnpm 缩短目录名导致 bundle 来源版本被误判的问题。
 
 V3→V4 迁移可能插入事件并改变 seq。跨升级保留的旧 sinceSeq 游标应通过重新读取会话刷新；插件不自行改写用户日志或执行批量迁移。
+
+## 0.8.1
+
+- fix(resume): 恢复离线会话时把模型路由填进 `agents.resume` 的 `agentOptions`。
+  此前不带 agentOptions，DSH 系统提示词的 `{{model}}` 变量为 undefined，resume 后的
+  第一次装配直接抛 `prompt variable "{{model}}" has no value for this assembly
+  (section "deployment:persona-prefix")`（真机 2026-10-27 用 `session_bridge_resume`
+  恢复一个历史会话后立即复现）。
+  路由优先级：显式参数 > 会话自己持久化的 `request/header` > 调用方 agent 的请求头 >
+  deployment 默认选择（`ctx.agentDefaultModel.currentSelection()`）。
+  回归测试：`scripts/test-tools-resume.mjs`（5 项，已接入 `npm test`）。
+
+- fix(resume): 部署默认路由改用 ctx.get('agentDefaultModel') 读取（Cordis 对未 inject 的服务属性访问会抛 without inject，真机 2026-10-27 复现），并新增 cordisGuard 回归测试。

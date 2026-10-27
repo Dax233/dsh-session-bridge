@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-session-bridge",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "会话桥 fork（dsh-session-bridge + 跨工作区正文检索）：保留上游的跨工作区查找/读取会话能力，新增 session_search_global 全文检索工具与 readOnlyTools 只读开关；当前默认注册全部工具。",
   "private": false,
   "type": "module",
@@ -58,7 +58,7 @@
     "build:client": "tsdown",
     "check:compat": "node scripts/check-dsh-compat.mjs",
     "smoke": "node scripts/smoke-bundle.mjs",
-    "test": "node scripts/test-peer-floor.mjs && node --experimental-strip-types scripts/test-bridge-core.mjs && node --experimental-strip-types scripts/test-search.mjs && node --experimental-strip-types scripts/test-loop-guard.mjs && node --experimental-strip-types scripts/test-handoff.mjs && node --experimental-strip-types scripts/test-monitor-loop.mjs && node --experimental-strip-types scripts/test-tools-create.mjs && node --experimental-strip-types scripts/test-config.mjs && node --experimental-strip-types scripts/test-tools-archived.mjs && node --experimental-strip-types --test scripts/test-v4.mjs",
+    "test": "node scripts/test-peer-floor.mjs && node --experimental-strip-types scripts/test-bridge-core.mjs && node --experimental-strip-types scripts/test-search.mjs && node --experimental-strip-types scripts/test-loop-guard.mjs && node --experimental-strip-types scripts/test-handoff.mjs && node --experimental-strip-types scripts/test-monitor-loop.mjs && node --experimental-strip-types scripts/test-tools-create.mjs && node --experimental-strip-types scripts/test-tools-resume.mjs && node --experimental-strip-types scripts/test-config.mjs && node --experimental-strip-types scripts/test-tools-archived.mjs && node --experimental-strip-types --test scripts/test-v4.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepare": "tsdown"
   },

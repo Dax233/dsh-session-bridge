@@ -84,6 +84,11 @@ action does.
   agentic run step by step (chain-of-thought included when the model streams it).
 - **Resume offline sessions.** `session_bridge_resume` brings a persisted
   session back online (idempotent); it can also override provider / model.
+  Since 0.8.1 resume always passes a resolved model route to `agents.resume`
+  (explicit args → the session's own persisted `request/header` → the calling
+  agent's header → the deployment default selection): without it the resumed
+  agent's `options.model` is undefined and DSH's system prompt fails to render
+  `{{model}}` (`prompt variable "{{model}}" has no value ... persona-prefix`).
 - **Find sessions.** `session_bridge_find` matches by title, id, workspace, or
   directory across all workspaces, returning live/running state, title, and
   working directory. Bridge-registered titles act as aliases.

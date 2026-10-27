@@ -103,6 +103,42 @@ export function asEventList(events: unknown): readonly SessionEvent[] {
   return Array.isArray(events) ? events : []
 }
 
+/** 模型路由（provider/model/可选 reasoningEffort）。 */
+export interface PersistedModelSelection {
+  provider?: string
+  model?: string
+  reasoningEffort?: string
+}
+
+/**
+ * 从持久化事件里取最近一次 `request/header` 携带的模型路由。
+ *
+ * `session_bridge_resume` 必须给 `agents.resume` 传 provider/model：DSH 的
+ * 系统提示词把 `{{model}}` 绑到 `agent.options.model`，resume 不带 agentOptions
+ * 时变量为 undefined，persona-prefix 装配直接抛
+ * `prompt variable "{{model}}" has no value for this assembly`（真机 2026-10-27）。
+ * 会话自己的请求头是它本来用的路由，比当前默认选择更忠实。
+ */
+export function modelSelectionFromEvents(events: readonly SessionEvent[]): PersistedModelSelection | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event === undefined) continue
+    if (event.type !== 'request/header') continue
+    const data = event.data as { header?: unknown } | null | undefined
+    const header = data !== null && typeof data === 'object' ? data.header : undefined
+    // 兼容两种落盘形态：header.config.{provider,model} 与扁平 header.provider/model。
+    const config = (header as { config?: unknown } | undefined)?.config ?? header
+    if (config === null || typeof config !== 'object') continue
+    const source = config as { provider?: unknown; model?: unknown; reasoningEffort?: unknown }
+    const selection: PersistedModelSelection = {}
+    if (typeof source.provider === 'string' && source.provider !== '') selection.provider = source.provider
+    if (typeof source.model === 'string' && source.model !== '') selection.model = source.model
+    if (typeof source.reasoningEffort === 'string' && source.reasoningEffort !== '') selection.reasoningEffort = source.reasoningEffort
+    if (Object.keys(selection).length > 0) return selection
+  }
+  return undefined
+}
+
 /**
  * 读取一个持久化（离线）会话的事件日志与头部元数据。兼容两代 persistence API：
  * - 旧版：`sessionPersistence.inspect(id)` 直接返回 { events, meta }；

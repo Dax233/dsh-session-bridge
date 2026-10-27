@@ -21,6 +21,7 @@ import {
   inspectPersistedSession,
   isStalled,
   maxSeq,
+  modelSelectionFromEvents,
   resolveTargetCwd,
   segmentsSince,
   sessionEvents,
@@ -175,7 +176,7 @@ function registerCreate(env: BridgeEnv): void {
       },
     },
     async execute(args: CreateArgs, exec) {
-      const caller = exec.agent as LiveAgentLike | undefined
+      const caller = exec.agent as unknown as LiveAgentLike | undefined
       // 创建逻辑与守护循环的「循环转移」共用一条路径（session-create.ts）：
       // 模型继承、预设组合、workspace 记账、桥侧登记只保留一份实现，避免两处漂移。
       const created = await createBridgeSession(env.ctx, env.registry, {
@@ -294,7 +295,7 @@ function registerResume(env: BridgeEnv): void {
           : 'resumed session ' + String(v.sessionId) + (typeof v.cwd === 'string' ? ' (cwd: ' + v.cwd + ')' : '')) }]
       },
     },
-    async execute(args: ResumeArgs) {
+    async execute(args: ResumeArgs, exec) {
       if (typeof args.sessionId !== 'string' || args.sessionId.trim() === '') throw new Error('invalid sessionId: expected a non-empty string')
       const existing = liveAgent(env, args.sessionId)
       if (existing !== undefined) {
@@ -326,10 +327,57 @@ function registerResume(env: BridgeEnv): void {
       const agents = env.ctx.agents as unknown as {
         resume(options: { resumeSessionId: string; agentOptions?: Record<string, unknown> }): Promise<{ agent: LiveAgentLike }>
       }
+      // DSH renders `{{model}}`/`{{provider}}` in the system prompt from
+      // `agent.options`; `agents.resume` without agentOptions left them undefined
+      // and the persona-prefix assembly threw
+      // `prompt variable "{{model}}" has no value for this assembly`
+      // (real device 2026-10-27, right after session_bridge_resume).
+      // Route precedence: explicit args > the session's own last request header >
+      // the calling agent's request header > the deployment default selection.
+      let persistedSelection: { provider?: string; model?: string; reasoningEffort?: string } | undefined
+      if (args.provider === undefined && args.model === undefined) {
+        try {
+          persistedSelection = modelSelectionFromEvents((await inspectPersistedSession(env.ctx, args.sessionId)).events)
+        } catch {
+          persistedSelection = undefined
+        }
+      }
+      const caller = exec.agent as unknown as LiveAgentLike | undefined
+      const callerSelection = caller?.session?.requestHeader?.()?.config
+      // Cordis throws when an undeclared service is read as a property
+      // ("cannot get property ... without inject"); `ctx.get()` is the
+      // inject-free lookup, so try it first and only fall back to property
+      // access for hosts that expose the service directly.
+      let defaultModelService: { currentSelection?: () => { provider?: string; model?: string; reasoningEffort?: string } | undefined } | undefined
+      try {
+        const get = (env.ctx as unknown as { get?: (name: string) => unknown }).get
+        const service = typeof get === 'function' ? get.call(env.ctx, 'agentDefaultModel') : undefined
+        if (service !== null && typeof service === 'object') defaultModelService = service as typeof defaultModelService
+      } catch {
+        defaultModelService = undefined
+      }
+      if (defaultModelService === undefined) {
+        try {
+          const service = (env.ctx as unknown as {
+            agentDefaultModel?: { currentSelection?: () => { provider?: string; model?: string; reasoningEffort?: string } | undefined }
+          }).agentDefaultModel
+          if (service !== null && typeof service === 'object') defaultModelService = service
+        } catch {
+          defaultModelService = undefined
+        }
+      }
+      const defaults = defaultModelService?.currentSelection?.()
+      const pick = (...values: Array<string | undefined>): string | undefined => {
+        for (const value of values) if (typeof value === 'string' && value !== '') return value
+        return undefined
+      }
+      const provider = pick(args.provider, persistedSelection?.provider, callerSelection?.provider, defaults?.provider)
+      const model = pick(args.model, persistedSelection?.model, callerSelection?.model, defaults?.model)
+      const reasoningEffort = pick(args.reasoningEffort, persistedSelection?.reasoningEffort, callerSelection?.reasoningEffort, defaults?.reasoningEffort)
       const agentOptions: Record<string, unknown> = {}
-      if (typeof args.provider === 'string' && args.provider !== '') agentOptions.provider = args.provider
-      if (typeof args.model === 'string' && args.model !== '') agentOptions.model = args.model
-      if (typeof args.reasoningEffort === 'string' && args.reasoningEffort !== '') agentOptions.reasoningEffort = args.reasoningEffort
+      if (provider !== undefined) agentOptions.provider = provider
+      if (model !== undefined) agentOptions.model = model
+      if (reasoningEffort !== undefined) agentOptions.reasoningEffort = reasoningEffort
       const handle = await agents.resume({ resumeSessionId: args.sessionId, ...(Object.keys(agentOptions).length > 0 ? { agentOptions } : {}) })
       const headerCwd = header.cwd
       const resumeWorkspaceId = await attachSessionToWorkspace(env.ctx, args.sessionId as SessionId, headerCwd) ?? workspaceByPath(env.ctx, headerCwd)
@@ -1204,4 +1252,6 @@ function registerArchive(env: BridgeEnv): void {
     },
   }))
 }
+
+
 
