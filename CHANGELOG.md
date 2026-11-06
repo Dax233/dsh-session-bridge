@@ -1,3 +1,42 @@
+# 0.9.0 (fork)
+
+> 0.8.1 与本节一起交付（0.8.1 的改动：`session_bridge_resume` 改为总是解析模型路由并传
+> `agentOptions`；默认模型服务改走 Cordis 无注入的 `ctx.get()` 探测）。
+
+- **重建并重新实测于 DSH 0.2.2-rc.1**；下限同步抬起为 `>=0.2.2-rc.1`（peer × 8、
+  `package.json` 的 `engines.dsh` 与 `dsh.plugin.json` 的 `engines.dsh`），devDependencies
+  解析到 0.2.2-rc.1（cordis 4.1.0、schemastery 3.19.0），bundle 内联版本随之刷新
+  （`check:compat --strict` 由红转绿）。**放弃更旧的 DSH**：0.2.1-rc.5 及更早的宿主从此
+  会被兼容性闸门以 `incompatible-version` 拒绝，这是预期行为，不是 bug。
+- **迁移到 0.2.2 的 agent 自持模型选择（`agent.model`）。** 旧实现内联了 rc.1 的两参
+  `installModelSelection(agentCtx, selection)`（装 `system-prompt/assemble` 变量改写 +
+  `agent/request` 强制路由 + pre-step 通知三件套）；0.2.2 的 agent-loop 在首步准备时就
+  固定路由（`agent.model.current()`）并校验 `agent/request` 替换不得改路由，旧钩子会在
+  特定场景（创建后切模型/切预设、caller 无路由头）抛
+  `agent/request proposed '…' after step preparation fixed '…'`。现在：
+  - create/resume 的**未发布 setup** 里改用 0.2.2 的**单参** `installModelSelection(agentCtx)`
+    （只装 pre-step 模型切换通知；`{{provider}}/{{model}}` 变量已由 agent-loop 原生绑定
+    到 `agent.model`）；
+  - 路由经 `agent.model.select({provider, model, reasoningEffort?})` 显式记录（持久
+    `model/selection` 事件；与已记录值相同为 no-op）。0.2.2 里记录值优先于
+    `agentOptions` 兜底，所以 resume 的显式 provider/model 覆盖**必须**这样记录，
+    工具的 "explicit args > 会话既有路由" 语义才保持；
+  - `agentOptions` 继续携带同一路由作为 options 兜底；
+  - setup 绝不返回 `installModelSelection` 的 disposer（0.2.2 会把 setup 返回值当
+    `AgentSetupCommit` 处理并调用它的 `.commit()`）。
+- **「caller 无路由头」的兜底**：create 的路由优先级变为 显式参数 > 调用方请求头 >
+  部署默认模型（`agentDefaultModel.currentSelection()`，与 resume 既有语义对齐，抽到
+  `core.deploymentDefaultSelection` 共用）。0.2.2 的首步固定路由没有任何宿主兜底服务，
+  路由不全时会在首个 turn 抛 `has no provider/model`——不再允许带空路由创建。
+- **P3 修复（monitor 定时器泄漏）**：`SessionMonitor.disposeTimer` 此前调
+  `ctx.clearInterval(timer)`——timer mixin 里从来没有这个方法（cordis-plugin-timer 的
+  `ctx.setInterval` 返回的是 effect disposer），异常被吞、定时器一直活到插件卸载。现在
+  保存并调用 `setInterval` 返回的 disposer，宿主真的给句柄时才回落 `ctx.clearInterval`。
+- **回归测试 +7**：create 的路由记录/默认兜底、resume 的 setup 记录与显式覆盖落盘、
+  monitor 的 disposer 清理；`pnpm typecheck` / `pnpm check:compat --strict` /
+  `pnpm test` / `pnpm build` / `pnpm smoke` 全绿，bundle 内 installModelSelection 仅剩
+  单参调用。
+
 # 0.8.0 (fork)
 
 > 本版本是 [heartmove/dsh-session-bridge](https://github.com/heartmove/dsh-session-bridge)

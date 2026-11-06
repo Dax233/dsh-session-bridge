@@ -6,8 +6,9 @@
 
 ## 1. 硬性规则：DSH 依赖只允许声明「下限」，必须向后兼容
 
-本插件必须能装在 **`0.1.7-0` 及之后的任意 DSH 上**（含 `0.2.0-rc.1`、`0.2.0-rc.2`、`0.2.1-rc.1`
-以及未来的 `0.3.x` / `1.x`）。为此：
+本插件必须能装在 **`0.2.2-rc.1` 及之后的任意 DSH 上**（含未来的 `0.3.x` / `1.x`；
+0.2.1-rc.5 及更早会被闸门以 `incompatible-version` 拒绝——这是 0.9.0 的抬限决定，见 CHANGELOG
+0.9.0 节的破坏点记录）。为此：
 
 > **所有 `@deepseek-ai/dsh*` 的 `peerDependencies` 只能是 `>=x.y.z` / `>=x.y.z-pre` 形式的下限范围；
 > 同时 `package.json` 的 `engines.dsh` 必须声明同一条下限（它在 `0.2.1-rc.1` 起单独裁决）。**
@@ -118,7 +119,7 @@ peer 的原因。
 ### 配套要求
 
 - **权威声明是 `package.json` 的 `engines.dsh`**：`0.2.1-rc.1` 起闸门先看它，存在就**单独裁决**，
-  所以它必须存在、是纯下限、且与 peer 下限**逐字一致**（当前都是 `>=0.1.7-0`）。
+  所以它必须存在、是纯下限、且与 peer 下限**逐字一致**（当前都是 `>=0.2.2-rc.1`）。
 - **`dsh.plugin.json` 是 0.1.x 的遗留元数据**：0.2.x 全系（实测两个安装树：CLI `0.2.1-rc.1` 与桌面版
   `0.2.0-rc.2`）**没有任何读取方**——grep 文件名零命中；真正把插件挂上的是 `package.json` 的
   `dsh.bundle.patch`。它仍随包发布给旧 harness，所以里面的 `engines.dsh` 也要与下限一致（守卫校验），
@@ -275,8 +276,9 @@ dependencies:
   可挂载——改动工具注册/渲染时，`src/` 与产物级断言都要覆盖。
 - **锁文件 = 已验证版本**：CI / 发布都用 `pnpm install --frozen-lockfile`；`pnpm-workspace.yaml` 的
   `minimumReleaseAgeExclude` 只列包名**不列版本**（DSH 发布当天即可安装；cordis / schemastery 例外）。
-- **运行时下限只由"我们跑不了更老的版本"决定**，当前是 `>=0.1.7-0`（peer 与 `package.json` 的
-  `engines.dsh` 必须一致）。上游发新版不构成抬下限的理由；真的遇到破坏性变更、必须改代码才能发布时，
-  按 §1「破坏性变更时」把下限一起抬上去。**devDependencies 是构建目标，不是运行时承诺**：它随
-  运行中的 harness 走（可以是 `>=0.2.1-rc.1` 这种更新的 tuple），只要求不低于 peer 下限。
+- **运行时下限只由"我们跑不了更老的版本"决定**，当前是 `>=0.2.2-rc.1`（peer 与 `package.json` 的
+  `engines.dsh` 必须一致；bundle 内联 0.2.2 的 model-selection 内部实现——`agent/pre-step`
+  载荷带 `modelSelection` 字段、agent.model.select——在它之前的宿主上跑不了）。上游发新版不构成
+  抬下限的理由；真的遇到破坏性变更、必须改代码才能发布时，按 §1「破坏性变更时」把下限一起抬上去。**devDependencies 是构建目标，不是运行时承诺**：它随
+  运行中的 harness 走（可以是 `>=0.2.2-rc.1` 这种更新的 tuple），只要求不低于 peer 下限。
 - 运行中的宿主会缓存已加载模块：改完渲染/工具后需**重启或热重载**才能在实机看到效果。

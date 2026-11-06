@@ -15,9 +15,9 @@
 > **修改这一行必须完整重启 DSH**：热切换「patch 触碰核心 `sessionQuery` 服务」的 bundle，
 > 可能让宿主卡在卸载阶段（实测出现过一次，恢复方式是完整重启，配置与代码均无损）。
 
-适配 DSH **0.1.7-0 及之后的版本**：`peerDependencies` 与 `package.json` 的 `engines.dsh` 都只声明
-下限（`>=0.1.7-0`），不设上限。**DSH `0.2.1-rc.1` 起 `engines.dsh` 单独裁决**（声明了就忽略
-`peerDependencies`），所以两者逐字一致，当前实测于 **0.2.1-rc.1**。详见[兼容性变更](CHANGELOG.md)与
+适配 DSH **0.2.2-rc.1 及之后的版本**：`peerDependencies` 与 `package.json` 的 `engines.dsh` 都只声明
+下限（`>=0.2.2-rc.1`），不设上限。**DSH `0.2.1-rc.1` 起 `engines.dsh` 单独裁决**（声明了就忽略
+`peerDependencies`），所以两者逐字一致，当前实测于 **0.2.2-rc.1**。详见[兼容性变更](CHANGELOG.md)与
 [AGENTS.md](./AGENTS.md)（版本策略是硬性规则，有 `pnpm test` 守卫）。
 
 一个 [DSH](https://www.deepseek.com) 插件：让当前 agent 能通过提示词驱动其它真实的 DSH 会话——
@@ -210,8 +210,8 @@
 
 - [Node.js](https://nodejs.org) ≥ 20
 - [pnpm](https://pnpm.io)
-- DSH `0.1.7-0` 或更高（`peerDependencies` 与 `engines.dsh` 都是 `>=0.1.7-0`；构建与实测基于
-  `0.2.1-rc.1`）。
+- DSH `0.2.2-rc.1` 或更高（`peerDependencies` 与 `engines.dsh` 都是 `>=0.2.2-rc.1`；构建与实测基于
+  `0.2.2-rc.1`）。
 
 ## 构建
 
@@ -235,7 +235,7 @@ dev_build_plugin dsh-session-bridge
 DSH 上可用——两者版本不一致时 `build.sh` 会给出警告。要验证运行版本请用
 `npm run check:compat`：它按已安装 DSH 包内随附的 `lib/types/*.d.ts`（即插件真正
 加载的 API 面）对 `src/` 做类型检查，随后把产物内联的 DSH 版本与已安装 harness
-比对——内联版本**低于**声明下限（`0.1.7-0`）才判失败，其余漂移只给提示（传
+比对——内联版本**低于**声明下限（`>=0.2.2-rc.1`）才判失败，其余漂移只给提示（传
 `--strict` 可恢复"必须完全一致"的严格判定），因为本插件声明的是"下限及之后"。
 内联的 `cordis` 单独成组，与已安装的 cordis 比对。
 

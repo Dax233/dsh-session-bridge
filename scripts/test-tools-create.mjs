@@ -52,6 +52,7 @@ function harness(options = {}) {
   const mounted = []
   const followups = []
   const attached = []
+  const selections = []
 
   const agent = {
     id: 'sb-stub',
@@ -78,7 +79,17 @@ function harness(options = {}) {
       list: () => [],
       create: async (createOptions) => {
         createCalls.push(createOptions)
-        if (typeof createOptions.setup === 'function') await createOptions.setup(tolerantCtx())
+        // dsh 0.2.2 AgentSetup 的第二参数是未发布的 agent：这里模拟宿主 loop 的
+        // ReactLoopAgent（带 AgentModel 桩），让 create 的 agent.model.select 行为可观测。
+        if (typeof createOptions.setup === 'function') {
+          await createOptions.setup(tolerantCtx(), {
+            id: 'sb-stub',
+            model: {
+              current: () => undefined,
+              select: (selection) => { selections.push({ ...selection }) },
+            },
+          })
+        }
         return { agent }
       },
     },
@@ -93,6 +104,10 @@ function harness(options = {}) {
       composeFrom: (_agentCtx, parentCtx) => { composed.push(parentCtx); return 'composed' },
       mount: async (_agentCtx, id) => { mounted.push(id) },
     },
+    // deploymentDefaultSelection 的属性探测路径会读它（只有 options 给了才存在）。
+    ...(options.defaultSelection !== undefined
+      ? { agentDefaultModel: { currentSelection: () => options.defaultSelection } }
+      : {}),
     sessionPersistence: { open: async () => { throw new Error('not used') } },
     setInterval: () => 0,
     clearInterval: () => {},
@@ -108,7 +123,7 @@ function harness(options = {}) {
   const monitor = { dispose() {}, start() {}, stop: () => false, list: () => [] }
   registerBridgeTools({ ctx, registry, monitor })
   return {
-    tools: registered, agent, events, createCalls, records, touches, composed, mounted, followups, attached,
+    tools: registered, agent, events, createCalls, records, touches, composed, mounted, followups, attached, selections,
     async run(args, withCaller = false) {
       const exec = {
         ...(withCaller ? { agent: { ctx: tolerantCtx(), session: agent.session } } : {}),
@@ -218,6 +233,32 @@ await test('create: without a caller nothing is inherited and no preset is mount
   assert.deepEqual(h.createCalls[0].agentOptions, {})
   assert.equal(h.composed.length, 0)
   assert.equal(h.mounted.length, 0)
+})
+
+await test('create (0.2.2): the resolved route is recorded via agent.model.select during setup', async () => {
+  const h = harness()
+  await h.run({ cwd: 'D:/target' }, true)
+  assert.deepEqual(h.selections, [{ provider: 'caller-provider', model: 'caller-model', reasoningEffort: 'high' }])
+})
+
+await test('create (0.2.2): no route recorded when nothing is known (agentOptions fallback only)', async () => {
+  const h = harness()
+  await h.run({ cwd: 'D:/target' })
+  assert.deepEqual(h.selections, [])
+})
+
+await test('create (0.2.2): explicit overrides are what get recorded', async () => {
+  const h = harness()
+  // 路由来自显式 provider/model；effort 没有显式给，按既有语义继承调用方的 'high'。
+  await h.run({ cwd: 'D:/target', provider: 'p2', model: 'm2' }, true)
+  assert.deepEqual(h.selections, [{ provider: 'p2', model: 'm2', reasoningEffort: 'high' }])
+})
+
+await test('create (0.2.2): deployment default route fills the gap when the caller has none', async () => {
+  const h = harness({ defaultSelection: { provider: 'p-default', model: 'm-default' } })
+  await h.run({ cwd: 'D:/target' })
+  assert.deepEqual(h.createCalls[0].agentOptions, { provider: 'p-default', model: 'm-default' })
+  assert.deepEqual(h.selections, [{ provider: 'p-default', model: 'm-default' }])
 })
 
 // --- waitForReply --------------------------------------------------------------

@@ -349,9 +349,22 @@ export class SessionMonitor {
 
   private disposeTimer(): void {
     if (this.timer === undefined) return
-    const ctx = this.ctx as unknown as { clearInterval(handle: unknown): void }
-    try { ctx.clearInterval(this.timer) } catch { /* noop */ }
+    const timer = this.timer
     this.timer = undefined
+    try {
+      // cordis-plugin-timer 的 ctx.setInterval 实为 ctx.effect(...)，返回的是
+      // disposer；宿主的 timer mixin 从来没有 clearTimeout/clearInterval（ctx mixin
+      // 只有 interval/timeout/throttle/debounce/setTimeout/setInterval），旧实现
+      // 调 ctx.clearInterval 只会抛 TypeError 然后被这里吞掉——定时器一直活到插件
+      // 卸载。fix：保存并调用 setInterval 返回的 disposer；宿主真的返回普通 handle
+      // （老版本/测试桩）时才回落 ctx.clearInterval。
+      if (typeof timer === 'function') {
+        ;(timer as () => void)()
+        return
+      }
+      const ctx = this.ctx as unknown as { clearInterval(handle: unknown): void }
+      ctx.clearInterval(timer)
+    } catch { /* noop */ }
   }
 
   /**

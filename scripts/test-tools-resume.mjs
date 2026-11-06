@@ -60,6 +60,7 @@ function harness(options = {}) {
   const registered = new Map()
   const resumeCalls = []
   const records = []
+  const selections = []
   const resumeAgent = {
     id: SESSION_ID,
     status: 'idle',
@@ -73,6 +74,11 @@ function harness(options = {}) {
     followup() {},
     steer() {},
     cancel() {},
+    // dsh 0.2.2 AgentModel 桩（仅 options.selectableAgent 时给出：让"旧宿主无 agent.model"
+    // 的继续分支也保持覆盖）。
+    ...(options.selectableAgent === true
+      ? { model: { current: () => undefined, select: (selection) => { selections.push({ ...selection }) } } }
+      : {}),
   }
 
   const ctx = tolerantCtx({
@@ -85,6 +91,7 @@ function harness(options = {}) {
       list: () => [],
       resume: async (resumeOptions) => {
         resumeCalls.push(resumeOptions)
+        if (typeof resumeOptions.setup === 'function') resumeOptions.setup(tolerantCtx(), resumeAgent)
         return { agent: resumeAgent }
       },
     },
@@ -118,6 +125,7 @@ function harness(options = {}) {
     tools: registered,
     resumeCalls,
     records,
+    selections,
     async run(args, execOverrides = {}) {
       const exec = { signal: new AbortController().signal, ...execOverrides }
       return registered.get('session_bridge_resume').execute(args, exec)
@@ -161,6 +169,25 @@ await test('resume: reads the deployment default through ctx.get under Cordis in
   const h = harness({ events: [], defaultSelection: { provider: 'p-default', model: 'm-default' }, cordisGuard: true })
   await h.run({ sessionId: SESSION_ID })
   assert.deepEqual(h.resumeCalls[0].agentOptions, { provider: 'p-default', model: 'm-default' })
+})
+
+await test('resume (0.2.2): setup records the persisted route via agent.model.select', async () => {
+  const h = harness({ events: [headerEvent({ provider: 'p-log', model: 'm-log', reasoningEffort: 'high' })], selectableAgent: true })
+  await h.run({ sessionId: SESSION_ID })
+  assert.equal(typeof h.resumeCalls[0].setup, 'function')
+  assert.deepEqual(h.selections, [{ provider: 'p-log', model: 'm-log', reasoningEffort: 'high' }])
+})
+
+await test('resume (0.2.2): explicit override is recorded over the persisted route', async () => {
+  const h = harness({ events: [headerEvent({ provider: 'p-log', model: 'm-log' })], selectableAgent: true })
+  await h.run({ sessionId: SESSION_ID, provider: 'p-arg', model: 'm-arg' })
+  assert.deepEqual(h.selections, [{ provider: 'p-arg', model: 'm-arg' }])
+})
+
+await test('resume (0.2.2): incomplete route is not recorded (agentOptions fallback only)', async () => {
+  const h = harness({ events: [], selectableAgent: true })
+  await h.run({ sessionId: SESSION_ID, model: 'm-only' })
+  assert.deepEqual(h.selections, [])
 })
 
 await test('resume: never calls agents.resume without agentOptions when a route is known', async () => {

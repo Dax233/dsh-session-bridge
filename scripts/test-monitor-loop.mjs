@@ -114,15 +114,24 @@ function harness(options = {}) {
     workspaceRegistry: { list: () => [], resolveByPath: async () => undefined, get: () => undefined },
     agentPresets: { composeFrom: () => undefined, mount: async () => undefined },
     sessionPersistence: { open: async () => { throw new Error('not used') } },
-    setInterval: () => 0,
+    // cordis-plugin-timer 1.x 语义：setInterval 返回的是 effect disposer（不是句柄）。
+    // 记录 created/discharged 两份清单，让 disposeTimer 的 P3 修复可断言。
+    setInterval: () => {
+      const disposer = () => { timersDisposed.push(1) }
+      timersCreated.push(disposer)
+      return disposer
+    },
     clearInterval: () => {},
     effect: () => {},
   }
   const registry = { record() {}, touch() {}, all: async () => [], load: async () => {}, persist: async () => {} }
+  const timersCreated = []
+  const timersDisposed = []
   const logFile = join(tmpdir(), 'dsh-session-bridge-loop-' + String(process.pid) + '-' + Math.random().toString(16).slice(2) + '.log')
   const monitor = new SessionMonitor(ctx, registry, logFile)
   return {
     ctx, registry, monitor, agents, roots, ownership, created, cancels, steers, followups, registered,
+    timersCreated, timersDisposed,
     addAgent,
     registerTools() { registerBridgeTools({ ctx, registry, monitor }); return registered },
   }
@@ -382,6 +391,19 @@ await test('monitor_list renders the loop guard state', async () => {
   assert.ok(text.includes('loopGuard: on field=reasoning'), 'loop line rendered: ' + text.slice(0, 400))
   assert.ok(text.includes('transfers: 1'), 'transfer counted')
   assert.ok(text.includes('descendants=report'))
+})
+
+await test('P3 fix: dispose calls the disposer returned by ctx.setInterval (not a nonexistent clearInterval)', async () => {
+  const h = harness()
+  // 直接用 monitor（不走工具层），断言确保启动与停止都过 ctx.setInterval 的返回值。
+  const monitor = new SessionMonitor(h.ctx, h.registry, join(tmpdir(), 'dsh-session-bridge-' + Math.random().toString(16).slice(2) + '.log'))
+  monitor.start(baseConfig('t-timer', { intervalMs: 10 }))
+  assert.equal(h.timersCreated.length, 1, 'start created one interval')
+  assert.equal(h.timersDisposed.length, 0, 'nothing disposed yet')
+  monitor.stop('t-timer')
+  assert.equal(h.timersDisposed.length, 1, 'stop called the stored disposer')
+  monitor.dispose()
+  assert.equal(h.timersDisposed.length, 1, 'second dispose is a no-op (timer slot cleared)')
 })
 
 console.log('')

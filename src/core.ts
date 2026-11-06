@@ -10,6 +10,18 @@ import type {} from '@deepseek-ai/dsh-session-persistence'
 import { WorkspaceId, type Workspace } from '@deepseek-ai/dsh-workspace'
 import type { BridgeDescendantInfo } from './handoff.ts'
 
+/**
+ * Agent 自持的模型选择面（dsh 0.2.2+ 的 `agent.model`，来自 AgentModel）。
+ * 旧宿主没有该字段；调用方一律用 `model?.select` 存在性探测。
+ * select 要求 provider 与 model 同时给出；不完整路由只得由 agentOptions 兜底。
+ */
+export interface AgentModelApi {
+  /** 解析下一步将采用的完整选择：记录的 selection > 最近请求 > agent options 兜底；无则 undefined。 */
+  current?: () => Readonly<PersistedModelSelection> | undefined
+  /** 记录一次完整选择（持久 `model/selection` 事件）；与已记录值相同为 no-op。 */
+  select: (selection: { provider: string; model: string; reasoningEffort?: string }) => void
+}
+
 /** Live 会话 agent 的运行时形态（dsh-agent 公开类型较薄，用结构类型）。 */
 export interface LiveAgentLike {
   readonly id: string
@@ -28,6 +40,8 @@ export interface LiveAgentLike {
     nextTurn?: readonly unknown[]
     nextStep?: readonly unknown[]
   }
+  /** dsh 0.2.2+ 的 agent 自持模型选择；旧宿主缺字段（可选，探测后使用）。 */
+  readonly model?: AgentModelApi
 }
 
 export interface BridgeMessageRow {
@@ -137,6 +151,42 @@ export function modelSelectionFromEvents(events: readonly SessionEvent[]): Persi
     if (Object.keys(selection).length > 0) return selection
   }
   return undefined
+}
+
+/**
+ * 部署级默认模型选择（若宿主提供 `agentDefaultModel` 服务）。
+ * Cordis 对未 inject 的服务按属性读会抛错，所以先走注入无关的 `ctx.get()`，
+ * 失败再回落属性探测；两者都失败/服务无完整路由时返回 undefined。
+ * 0.2.2 的 agent-loop 在首步前**没有默认路由兜底**（会以
+ * `has no provider/model` 拒绝首步），供 create/resume 在 caller 无路由头时兜底。
+ */
+export function deploymentDefaultSelection(ctx: Context): PersistedModelSelection | undefined {
+  type DefaultModelService = { currentSelection?: () => { provider?: unknown; model?: unknown; reasoningEffort?: unknown } }
+  let service: DefaultModelService | undefined
+  try {
+    const get = (ctx as unknown as { get?: (name: string) => unknown }).get
+    const found = typeof get === 'function' ? get.call(ctx, 'agentDefaultModel') : undefined
+    if (found !== null && typeof found === 'object') service = found as DefaultModelService
+  } catch {
+    service = undefined
+  }
+  if (service === undefined) {
+    try {
+      const found = (ctx as unknown as { agentDefaultModel?: unknown }).agentDefaultModel
+      if (found !== null && typeof found === 'object') service = found as DefaultModelService
+    } catch {
+      service = undefined
+    }
+  }
+  const selection = service?.currentSelection?.()
+  if (selection === null || typeof selection !== 'object') return undefined
+  if (typeof selection.provider !== 'string' || selection.provider === '') return undefined
+  if (typeof selection.model !== 'string' || selection.model === '') return undefined
+  return {
+    provider: selection.provider,
+    model: selection.model,
+    ...(typeof selection.reasoningEffort === 'string' && selection.reasoningEffort !== '' ? { reasoningEffort: selection.reasoningEffort } : {}),
+  }
 }
 
 /**

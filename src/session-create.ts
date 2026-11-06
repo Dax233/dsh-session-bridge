@@ -12,24 +12,22 @@
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
-import * as agentApi from '@deepseek-ai/dsh-agent'
+import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import {
   attachSessionToWorkspace,
+  deploymentDefaultSelection,
   maxSeq,
   resolveTargetCwd,
   sessionEvents,
   userMessage,
   workspaceByPath,
+  type AgentModelApi,
   type LiveAgentLike,
+  type PersistedModelSelection,
   type TargetCwdArgs,
 } from './core.ts'
 import type { BridgeRegistry } from './registry.ts'
-
-interface ModelSelectionRef {
-  current: { provider?: string; model?: string; reasoningEffort?: string } | undefined
-  assembled?: undefined
-}
 
 /** 创建会话时的调用方：模型路由从它的 session 请求头继承，预设从它的 ctx 组合。 */
 export interface BridgeSessionCaller {
@@ -66,6 +64,40 @@ export interface CreatedBridgeSession {
 }
 
 /**
+ * dsh 0.2.2 的未发布 Agent setup（create 与 resume 共用）：
+ * ① 把解析出的完整路由记进 Agent 自持的模型选择（`agent.model.select`，持久
+ *    `model/selection` 事件；与已记录值相同为 no-op——resume 带会话既有路由时不会
+ *    追加事件，显式 provider/model 覆盖则真正落盘。0.2.2 起记录值优先于 agentOptions
+ *    兜底，故显式覆盖必须显式记录才能生效，保持工具"explicit args > 会话既有路由"的
+ *    既有语义）；
+ * ② 安装 agent/pre-step 模型切换通知（单参 installModelSelection；官方 0.2.2
+ *    session-controller 对 create/resume 都这么做）。`{{provider}}/{{model}}` 提示变量
+ *    已由 agent-loop 原生绑定到 agent.model，无需再装 assemble 变量 hook。
+ * 旧宿主没有 agent.model（`select` 存在性探测失败）→ 只安装 pre-step 通知，
+ * 路由继续由 agentOptions 兜底（0.2.2 下限之前加载本 bundle 的场景不获支持）。
+ *
+ * 注意：绝不把 `installModelSelection` 返回的 disposer 当 setup 返回值——0.2.2 会把
+ * setup 的返回值当 AgentSetupCommit 对待并对它调用 .commit()，disposer 没有 commit
+ * 方法，会在发布点抛 TypeError。这里显式返回 undefined。
+ */
+export function bridgeModelSelectionSetup(route: PersistedModelSelection): (agentCtx: Context, agent?: unknown) => void {
+  // select 要求 provider/model 同时给出（完整 ModelSelection）；残缺路由只能靠
+  // agentOptions 兜底，不落盘。
+  const complete = route.provider !== undefined && route.provider !== '' && route.model !== undefined && route.model !== ''
+  return (agentCtx: Context, agent?: unknown): void => {
+    const agentModel = (agent as { model?: AgentModelApi } | undefined)?.model
+    if (complete && agentModel !== undefined && typeof agentModel.select === 'function') {
+      agentModel.select({
+        provider: route.provider as string,
+        model: route.model as string,
+        ...(route.reasoningEffort === undefined ? {} : { reasoningEffort: route.reasoningEffort }),
+      })
+    }
+    installModelSelection(agentCtx)
+  }
+}
+
+/**
  * 创建一个真实的顶层 DSH 会话（agent + session + workspace 记账 + 桥侧登记），
  * 可选立即投递首条提示。返回的 agent 已是 live agent。
  */
@@ -77,20 +109,22 @@ export async function createBridgeSession(
   const caller = options.caller
   const targetCwd = await resolveTargetCwd(ctx, options.callerCwd ?? caller?.session.header.cwd, options)
   const callerHeader = caller?.session.requestHeader?.()
-  const provider = typeof options.provider === 'string' && options.provider !== '' ? options.provider : callerHeader?.config?.provider ?? ''
-  const model = typeof options.model === 'string' && options.model !== '' ? options.model : callerHeader?.config?.model ?? ''
+  // 路由优先级：显式参数 > 调用方请求头 > 部署默认模型。第三层是 0.2.2 才需要的行为：
+  // 旧 harness 的默认模型服务经 agent/request waterfall 兜底，而 0.2.2 的 agent-loop
+  // 在首步准备时固定路由（agent.model.current()），没有任何兜底——路由不全会在首个
+  // turn 直接抛 "has no provider/model: set AgentOptions.provider and AgentOptions.model"。
+  const defaultsRoute = deploymentDefaultSelection(ctx)
+  const provider = typeof options.provider === 'string' && options.provider !== '' ? options.provider : callerHeader?.config?.provider ?? defaultsRoute?.provider ?? ''
+  const model = typeof options.model === 'string' && options.model !== '' ? options.model : callerHeader?.config?.model ?? defaultsRoute?.model ?? ''
   const reasoningEffort = typeof options.reasoningEffort === 'string' && options.reasoningEffort !== ''
     ? options.reasoningEffort
-    : callerHeader?.config?.reasoningEffort
+    : callerHeader?.config?.reasoningEffort ?? defaultsRoute?.reasoningEffort
 
-  const selection: ModelSelectionRef = {
-    current: {
-      ...(provider !== '' ? { provider } : {}),
-      ...(model !== '' ? { model } : {}),
-      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-    },
+  const route: PersistedModelSelection = {
+    ...(provider !== '' ? { provider } : {}),
+    ...(model !== '' ? { model } : {}),
+    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
   }
-  const installModelSelection = (agentApi as unknown as { installModelSelection?: (agentCtx: Context, selection: ModelSelectionRef) => () => void }).installModelSelection
 
   const sessionId = `${options.idPrefix ?? 'sb-'}${randomUUID()}`
   const agents = ctx.agents as unknown as {
@@ -98,10 +132,12 @@ export async function createBridgeSession(
       sessionId: string
       meta?: { cwd?: string; agentPreset?: string }
       agentOptions?: Record<string, unknown>
-      setup?: (agentCtx: Context) => void | Promise<void>
+      // dsh 0.2.2 的 AgentSetup：第二参数是未发布的 agent（其 .model 是 AgentModel）。
+      setup?: (agentCtx: Context, agent?: unknown) => void | Promise<void>
     }): Promise<{ agent: LiveAgentLike }>
   }
   const requestedPreset = typeof options.agentPreset === 'string' && options.agentPreset.trim() !== '' ? options.agentPreset.trim() : undefined
+  const applySelection = bridgeModelSelectionSetup(route)
   const handle = await agents.create({
     sessionId,
     meta: {
@@ -113,7 +149,7 @@ export async function createBridgeSession(
       ...(model !== '' ? { model } : {}),
       ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
     },
-    setup: async (agentCtx: Context) => {
+    setup: async (agentCtx: Context, agent?: unknown) => {
       if (requestedPreset !== undefined) {
         // 显式 agentPreset 就组合那一个预设。落到下面的 caller-join 会静默忽略请求：
         // id 仍然写进 session header，而 agent 实际跑在调用方的既有组合与工具上。
@@ -123,25 +159,7 @@ export async function createBridgeSession(
         const presets = ctx.agentPresets as unknown as { composeFrom(agentCtx: Context, parentCtx: Context): string | undefined }
         presets.composeFrom(agentCtx, caller.ctx)
       }
-      if (installModelSelection !== undefined) {
-        installModelSelection(agentCtx, selection)
-        return
-      }
-      // 兜底：只重写请求配置（模型选择拆分可接受）。
-      const hookable = agentCtx as unknown as { on(name: string, listener: (...args: unknown[]) => unknown): unknown }
-      hookable.on('agent/request', async (payload: unknown, next: unknown) => {
-        const nxt = next as () => Promise<Record<string, unknown>>
-        const resolved = await nxt()
-        const sel = selection.current
-        if (sel === undefined) return resolved
-        const { reasoningEffort: _drop, ...rest } = resolved
-        return {
-          ...rest,
-          ...(sel.provider === undefined ? {} : { provider: sel.provider }),
-          ...(sel.model === undefined ? {} : { model: sel.model }),
-          ...(sel.reasoningEffort === undefined ? {} : { reasoningEffort: sel.reasoningEffort }),
-        }
-      })
+      applySelection(agentCtx, agent)
     },
   })
 

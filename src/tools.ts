@@ -17,6 +17,7 @@ import type {
 import {
   archivedEntries,
   attachSessionToWorkspace,
+  deploymentDefaultSelection,
   foldMessages,
   inspectPersistedSession,
   isStalled,
@@ -32,7 +33,7 @@ import {
   workspaceByPath,
   workspaceBySession,
 } from './core.ts'
-import { createBridgeSession, type BridgeSessionCaller } from './session-create.ts'
+import { bridgeModelSelectionSetup, createBridgeSession, type BridgeSessionCaller } from './session-create.ts'
 import type { BridgeRegistry } from './registry.ts'
 import type { SessionMonitor, MonitorConfig, MonitorEntryState, CoTRule } from './monitor.ts'
 import type { LoopPolicy } from './config.ts'
@@ -325,7 +326,13 @@ function registerResume(env: BridgeEnv): void {
         throw new Error('session ' + JSON.stringify(args.sessionId) + ' is unknown (no live agent and no persisted log) — use session_bridge_find to locate existing sessions')
       }
       const agents = env.ctx.agents as unknown as {
-        resume(options: { resumeSessionId: string; agentOptions?: Record<string, unknown> }): Promise<{ agent: LiveAgentLike }>
+        resume(options: {
+          resumeSessionId: string
+          agentOptions?: Record<string, unknown>
+          // dsh 0.2.2 的 AgentSetup：第二参数是未发布的 agent；工具测试桩可能只传
+          // 一个参数，所以按可选处理（内部对 agent?.model 做探测）。
+          setup?: (agentCtx: Context, agent?: unknown) => void | Promise<void>
+        }): Promise<{ agent: LiveAgentLike }>
       }
       // DSH renders `{{model}}`/`{{provider}}` in the system prompt from
       // `agent.options`; `agents.resume` without agentOptions left them undefined
@@ -334,6 +341,9 @@ function registerResume(env: BridgeEnv): void {
       // (real device 2026-10-27, right after session_bridge_resume).
       // Route precedence: explicit args > the session's own last request header >
       // the calling agent's request header > the deployment default selection.
+      // dsh 0.2.2 起记录的 model/selection 优先于 agentOptions 兜底，所以除了
+      // agentOptions 之外还要经未发布 setup 的 agent.model.select 显式记录
+      // 解析出的路由（见下）。
       let persistedSelection: { provider?: string; model?: string; reasoningEffort?: string } | undefined
       if (args.provider === undefined && args.model === undefined) {
         try {
@@ -344,29 +354,9 @@ function registerResume(env: BridgeEnv): void {
       }
       const caller = exec.agent as unknown as LiveAgentLike | undefined
       const callerSelection = caller?.session?.requestHeader?.()?.config
-      // Cordis throws when an undeclared service is read as a property
-      // ("cannot get property ... without inject"); `ctx.get()` is the
-      // inject-free lookup, so try it first and only fall back to property
-      // access for hosts that expose the service directly.
-      let defaultModelService: { currentSelection?: () => { provider?: string; model?: string; reasoningEffort?: string } | undefined } | undefined
-      try {
-        const get = (env.ctx as unknown as { get?: (name: string) => unknown }).get
-        const service = typeof get === 'function' ? get.call(env.ctx, 'agentDefaultModel') : undefined
-        if (service !== null && typeof service === 'object') defaultModelService = service as typeof defaultModelService
-      } catch {
-        defaultModelService = undefined
-      }
-      if (defaultModelService === undefined) {
-        try {
-          const service = (env.ctx as unknown as {
-            agentDefaultModel?: { currentSelection?: () => { provider?: string; model?: string; reasoningEffort?: string } | undefined }
-          }).agentDefaultModel
-          if (service !== null && typeof service === 'object') defaultModelService = service
-        } catch {
-          defaultModelService = undefined
-        }
-      }
-      const defaults = defaultModelService?.currentSelection?.()
+      // 部署默认模型与 create 共用 core.deploymentDefaultSelection（同样的
+      // guarded ctx.get → 属性探测语义；共享实现避免两处漂移）。
+      const defaults = deploymentDefaultSelection(env.ctx)
       const pick = (...values: Array<string | undefined>): string | undefined => {
         for (const value of values) if (typeof value === 'string' && value !== '') return value
         return undefined
@@ -378,7 +368,15 @@ function registerResume(env: BridgeEnv): void {
       if (provider !== undefined) agentOptions.provider = provider
       if (model !== undefined) agentOptions.model = model
       if (reasoningEffort !== undefined) agentOptions.reasoningEffort = reasoningEffort
-      const handle = await agents.resume({ resumeSessionId: args.sessionId, ...(Object.keys(agentOptions).length > 0 ? { agentOptions } : {}) })
+      // dsh 0.2.2：在未发布 setup 里记录路由（agent.model.select）并安装 pre-step
+      // 切换通知，与官方 0.2.2 session-controller 的 resume 一致。注意抽出的函数
+      // 绝不返回 installModelSelection 的 disposer（会被当 AgentSetupCommit）。
+      const applySelection = bridgeModelSelectionSetup({ ...(provider === undefined ? {} : { provider }), ...(model === undefined ? {} : { model }), ...(reasoningEffort === undefined ? {} : { reasoningEffort }) })
+      const handle = await agents.resume({
+        resumeSessionId: args.sessionId,
+        ...(Object.keys(agentOptions).length > 0 ? { agentOptions } : {}),
+        setup: (agentCtx: Context, agent?: unknown) => { applySelection(agentCtx, agent) },
+      })
       const headerCwd = header.cwd
       const resumeWorkspaceId = await attachSessionToWorkspace(env.ctx, args.sessionId as SessionId, headerCwd) ?? workspaceByPath(env.ctx, headerCwd)
       env.registry.record({
